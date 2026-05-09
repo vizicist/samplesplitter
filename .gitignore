@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*.cues.json
+*.mp3
+*.wav
+*.aiff
+.DS_Store
