@@ -460,6 +460,8 @@ async function loadFiles() {
   const data = await resp.json();
   const list = document.getElementById('file-list');
   list.innerHTML = '';
+  let firstItem = null;
+  let firstFile = null;
   data.files.forEach(f => {
     const div = document.createElement('div');
     div.className = 'file-item';
@@ -467,7 +469,14 @@ async function loadFiles() {
     div.title = f;
     div.onclick = () => selectFile(f, div);
     list.appendChild(div);
+    if (!firstItem) {
+      firstItem = div;
+      firstFile = f;
+    }
   });
+  if (!currentFile && firstItem) {
+    await selectFile(firstFile, firstItem);
+  }
 }
 
 async function selectFile(filename, el) {
