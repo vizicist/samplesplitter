@@ -348,7 +348,6 @@
     </div>
 
     <div class="split-buttons" id="split-buttons"></div>
-    <audio id="manual-player" preload="auto"></audio>
 
     <div class="status-bar">
       <span><span class="dot" id="dot-midi"></span> MIDI: <span id="status-midi">not connected</span></span>
@@ -372,6 +371,10 @@ let splitMode = 'fixed';
 let pollInterval = null;
 let manualStopTimer = null;
 let manualPlayingIndex = null;
+let manualAudioContext = null;
+let manualAudioBuffer = null;
+let manualAudioFile = null;
+let manualAudioSource = null;
 const MAX_VOICES = 8;
 
 // ---------------------------------------------------------------------------
@@ -570,30 +573,39 @@ function setManualButtonActive(index) {
   });
 }
 
-function stopManualPlayback() {
-  const audio = document.getElementById('manual-player');
+function stopManualPlayback(redraw = true) {
   if (manualStopTimer) {
     clearTimeout(manualStopTimer);
     manualStopTimer = null;
   }
-  audio.pause();
+  if (manualAudioSource) {
+    manualAudioSource.onended = null;
+    try {
+      manualAudioSource.stop();
+    } catch (e) {
+      // The source may already have ended naturally.
+    }
+    manualAudioSource = null;
+  }
   manualPlayingIndex = null;
   setManualButtonActive(null);
+  if (redraw) drawWaveform();
 }
 
-function waitForAudioMetadata(audio) {
-  if (audio.readyState >= 1) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const onLoaded = () => cleanup(resolve);
-    const onError = () => cleanup(() => reject(new Error('could not load MP3')));
-    const cleanup = (done) => {
-      audio.removeEventListener('loadedmetadata', onLoaded);
-      audio.removeEventListener('error', onError);
-      done();
-    };
-    audio.addEventListener('loadedmetadata', onLoaded, { once: true });
-    audio.addEventListener('error', onError, { once: true });
-  });
+async function getManualAudioBuffer() {
+  if (manualAudioBuffer && manualAudioFile === currentFile) {
+    return manualAudioBuffer;
+  }
+
+  manualAudioContext = manualAudioContext || new AudioContext();
+  const resp = await fetch(`/api/media?file=${encodeURIComponent(currentFile)}`);
+  if (!resp.ok) {
+    throw new Error('could not load MP3');
+  }
+  const bytes = await resp.arrayBuffer();
+  manualAudioBuffer = await manualAudioContext.decodeAudioData(bytes);
+  manualAudioFile = currentFile;
+  return manualAudioBuffer;
 }
 
 async function playSplit(index) {
@@ -603,21 +615,36 @@ async function playSplit(index) {
     return;
   }
 
-  const audio = document.getElementById('manual-player');
   const start = cueData.splits[index];
   const end = index + 1 < cueData.splits.length ? cueData.splits[index + 1] : cueData.duration;
-  const durationMs = Math.max(0, (end - start) * 1000);
+  const duration = Math.max(0, end - start);
 
-  stopManualPlayback();
+  stopManualPlayback(false);
   manualPlayingIndex = index;
   setManualButtonActive(index);
-  audio.src = `/api/media?file=${encodeURIComponent(currentFile)}`;
+  drawWaveform();
 
   try {
-    await waitForAudioMetadata(audio);
-    audio.currentTime = start;
-    await audio.play();
-    manualStopTimer = setTimeout(stopManualPlayback, durationMs);
+    const buffer = await getManualAudioBuffer();
+    if (manualPlayingIndex !== index) return;
+    if (manualAudioContext.state === 'suspended') {
+      await manualAudioContext.resume();
+    }
+    if (manualPlayingIndex !== index) return;
+    const source = manualAudioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(manualAudioContext.destination);
+    source.onended = () => {
+      if (manualAudioSource === source) {
+        manualAudioSource = null;
+        stopManualPlayback();
+      }
+    };
+    manualAudioSource = source;
+    const safeStart = Math.min(start, buffer.duration);
+    const safeDuration = Math.min(duration, Math.max(0, buffer.duration - safeStart));
+    source.start(0, safeStart, safeDuration);
+    manualStopTimer = setTimeout(stopManualPlayback, safeDuration * 1000);
   } catch (e) {
     stopManualPlayback();
     alert('Playback failed: ' + e.message);
@@ -676,6 +703,31 @@ function drawWaveform() {
   }
   ctx.stroke();
 
+  // Draw manual playback highlight over the waveform.
+  if (
+    cueData &&
+    cueData.splits &&
+    cueData.duration > 0 &&
+    manualPlayingIndex !== null &&
+    manualPlayingIndex >= 0 &&
+    manualPlayingIndex < cueData.splits.length
+  ) {
+    const splits = cueData.splits;
+    const dur = cueData.duration;
+    const start = splits[manualPlayingIndex];
+    const end = manualPlayingIndex + 1 < splits.length
+      ? splits[manualPlayingIndex + 1]
+      : dur;
+    const x0 = Math.floor((start / dur) * W);
+    const x1 = Math.max(x0 + 2, Math.floor((end / dur) * W));
+
+    ctx.fillStyle = 'rgba(232, 160, 32, 0.34)';
+    ctx.fillRect(x0, 0, x1 - x0, H);
+    ctx.strokeStyle = '#e8a020';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x0 + 1, 1, Math.max(0, x1 - x0 - 2), H - 2);
+  }
+
   // Draw split point lines + note labels
   if (cueData && cueData.splits && cueData.duration > 0) {
     const splits = cueData.splits;
@@ -719,8 +771,13 @@ function midiNoteName(n) {
 // ---------------------------------------------------------------------------
 function startPolling() {
   pollInterval = setInterval(async () => {
-    const resp = await fetch('/api/state');
-    const data = await resp.json();
+    let data;
+    try {
+      const resp = await fetch('/api/state');
+      data = await resp.json();
+    } catch (e) {
+      return;
+    }
 
     // Voice pips
     const voices = data.active_voices || [];
