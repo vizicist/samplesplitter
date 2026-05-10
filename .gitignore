@@ -2,7 +2,9 @@ __pycache__/
 *.py[cod]
 *.cues.json
 *.mp3
+!mp3s/*.mp3
 *.wav
 *.aiff
 .DS_Store
 ffmpeg/doc/
+mp3s/desktop.ini
