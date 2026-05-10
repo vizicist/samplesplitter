@@ -876,7 +876,7 @@ def open_browser(port):
 
 def main():
     parser = argparse.ArgumentParser(description="Sample splitter and MIDI player.")
-    parser.add_argument("--dir", required=True, help="Directory containing MP3 files")
+    parser.add_argument("--dir", default="mp3s", help="Directory containing MP3 files (default: mp3s)")
     parser.add_argument("--port", type=int, default=9876, help="HTTP port (default: 9876)")
     parser.add_argument("--base-note", type=int, default=48, help="MIDI base note (default: 48 = C3)")
     args = parser.parse_args()
