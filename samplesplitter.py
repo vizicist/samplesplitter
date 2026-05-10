@@ -44,12 +44,10 @@ else:
 def find_ffmpeg():
     """Find ffmpeg binary: check script-relative ffmpeg/bin/ first, then PATH."""
     script_dir = Path(__file__).parent.resolve()
-    candidates = [
-        script_dir / "ffmpeg" / "bin" / "ffmpeg",
-        script_dir / "ffmpeg" / "bin" / "ffmpeg.exe",
-    ]
+    bin_dir = script_dir / "ffmpeg" / "bin"
+    candidates = [bin_dir / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")]
     for c in candidates:
-        if c.exists():
+        if c.exists() and os.access(c, os.X_OK):
             return str(c)
     # Fall back to PATH
     import shutil
@@ -893,6 +891,7 @@ def main():
     parser.add_argument("--dir", default="mp3s", help="Directory containing MP3 files (default: mp3s)")
     parser.add_argument("--port", type=int, default=9876, help="HTTP port (default: 9876)")
     parser.add_argument("--base-note", type=int, default=48, help="MIDI base note (default: 48 = C3)")
+    parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically")
     args = parser.parse_args()
 
     mp3_dir = Path(args.dir).expanduser().resolve()
@@ -907,9 +906,10 @@ def main():
     pyo_thread = threading.Thread(target=init_pyo, daemon=True)
     pyo_thread.start()
 
-    # Open browser (non-blocking, detects if already open)
-    browser_thread = threading.Thread(target=open_browser, args=(args.port,), daemon=True)
-    browser_thread.start()
+    if not args.no_open:
+        # Open browser (non-blocking, detects if already open)
+        browser_thread = threading.Thread(target=open_browser, args=(args.port,), daemon=True)
+        browser_thread.start()
 
     print(f"Sample Splitter running at http://localhost:{args.port}")
     print(f"MP3 directory: {mp3_dir}")
