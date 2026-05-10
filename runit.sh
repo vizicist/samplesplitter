@@ -25,10 +25,17 @@ if [[ ! -d "$MP3_DIR" ]]; then
     exit 1
 fi
 
-if curl -fsS "$STATE_URL" >/dev/null 2>&1; then
-    echo "Sample Splitter is already running on $URL"
-    open "$URL"
-    exit 0
+echo "Stopping any existing Sample Splitter servers..."
+if command -v pgrep >/dev/null 2>&1; then
+    while IFS= read -r PID; do
+        [[ -z "$PID" || "$PID" == "$$" ]] && continue
+        kill "$PID" >/dev/null 2>&1 || true
+    done < <(pgrep -f "[s]amplesplitter.py" || true)
+    sleep 1
+    while IFS= read -r PID; do
+        [[ -z "$PID" || "$PID" == "$$" ]] && continue
+        kill -9 "$PID" >/dev/null 2>&1 || true
+    done < <(pgrep -f "[s]amplesplitter.py" || true)
 fi
 
 if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then

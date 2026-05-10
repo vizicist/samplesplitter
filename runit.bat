@@ -14,6 +14,10 @@ if %ERRORLEVEL% EQU 0 (
     set "PY_CMD=py -3"
 )
 
+echo Stopping any existing Sample Splitter servers...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine -match 'samplesplitter\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>nul
+timeout /t 1 /nobreak >nul
+
 echo Starting Sample Splitter on http://localhost:%PORT%/
 start "Sample Splitter Server" cmd /k "%PY_CMD% samplesplitter.py --port %PORT%"
 

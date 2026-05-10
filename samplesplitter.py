@@ -77,6 +77,7 @@ state = {
     "peak_start_enabled": True,
     "pitch_bend_semitones": 0.0,
     "active_voices": {},       # voice key -> (pyo.SfPlayer, pyo.CallAfter)
+    "voice_order": [],         # oldest -> newest active voice keys
     "midi_note_voices": {},    # MIDI note -> queued voice keys
     "midi_voice_counter": 0,
     "pyo_server": None,
@@ -93,6 +94,8 @@ state_lock = threading.Lock()
 PITCH_BEND_RANGE = 2.0
 PITCH_BEND_MAX = 8192
 WAVEFORM_POINTS = 1200        # number of amplitude points sent to browser
+MAX_ACTIVE_VOICES = 48
+MAX_MIDI_VOICES_PER_NOTE = 8
 
 
 def get_midi_input_names():
@@ -470,10 +473,15 @@ def player_note_on(note, velocity):
         if split_index < 0 or split_index >= len(splits):
             return
 
+        note_voice_keys = state["midi_note_voices"].setdefault(note, [])
+        while len(note_voice_keys) >= MAX_MIDI_VOICES_PER_NOTE:
+            _stop_voice(note_voice_keys[0])
+            note_voice_keys = state["midi_note_voices"].setdefault(note, [])
+
         voice_key = f"midi-{note}-{state['midi_voice_counter']}"
         state["midi_voice_counter"] += 1
         _play_split_locked(voice_key, split_index, velocity)
-        state["midi_note_voices"].setdefault(note, []).append(voice_key)
+        note_voice_keys.append(voice_key)
 
 
 def player_preview_on(split_index, velocity=110, voice_key="preview"):
@@ -496,6 +504,8 @@ def _play_split_locked(voice_key, split_index, velocity):
     duration = cue_data["duration"]
 
     _stop_voice(voice_key)
+    while len(state["active_voices"]) >= MAX_ACTIVE_VOICES and state["voice_order"]:
+        _stop_voice(state["voice_order"][0])
 
     start_sec = splits[split_index]
     end_sec = splits[split_index + 1] if split_index + 1 < len(splits) else duration
@@ -519,6 +529,7 @@ def _play_split_locked(voice_key, split_index, velocity):
 
     stop_cb = pyo.CallAfter(lambda: _stop_voice_cb(voice_key), seg_duration)
     state["active_voices"][voice_key] = (player, stop_cb)
+    state["voice_order"].append(voice_key)
 
 
 def _stop_voice(note):
@@ -526,6 +537,8 @@ def _stop_voice(note):
     if note in state["active_voices"]:
         player, _ = state["active_voices"].pop(note)
         player.stop()
+    if note in state["voice_order"]:
+        state["voice_order"].remove(note)
     _remove_midi_voice_key_locked(note)
 
 
@@ -542,6 +555,8 @@ def _stop_voice_cb(note):
     with state_lock:
         if note in state["active_voices"]:
             state["active_voices"].pop(note)
+        if note in state["voice_order"]:
+            state["voice_order"].remove(note)
         _remove_midi_voice_key_locked(note)
 
 
@@ -571,6 +586,7 @@ def player_stop_all():
     with state_lock:
         for note in list(state["active_voices"].keys()):
             _stop_voice(note)
+        state["voice_order"].clear()
         state["midi_note_voices"].clear()
 
 
