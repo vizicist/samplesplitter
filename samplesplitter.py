@@ -31,8 +31,11 @@ except ImportError:
 
 try:
     import pyo
-except ImportError:
+except Exception as e:
+    PYO_IMPORT_ERROR = e
     pyo = None
+else:
+    PYO_IMPORT_ERROR = None
 
 # ---------------------------------------------------------------------------
 # ffmpeg path resolution
@@ -387,17 +390,28 @@ def boot_pyo_server(output_id=None):
 
 def init_pyo():
     if pyo is None:
+        msg = "pyo is not installed"
+        if PYO_IMPORT_ERROR is not None:
+            msg = f"pyo is unavailable: {PYO_IMPORT_ERROR}"
         with state_lock:
-            state["audio_error"] = "pyo is not installed"
+            state["audio_error"] = msg
             state["pyo_ready"] = False
-        print("Audio disabled: pyo is not installed.", file=sys.stderr)
+        print(f"Audio disabled: {msg}.", file=sys.stderr)
         return
 
     with state_lock:
         output_id = state["audio_output_id"]
 
-    server = boot_pyo_server(output_id)
-    devices, default_id, _ = get_audio_output_devices()
+    try:
+        server = boot_pyo_server(output_id)
+        devices, default_id, _ = get_audio_output_devices()
+    except Exception as e:
+        with state_lock:
+            state["audio_error"] = f"pyo failed to start: {e}"
+            state["pyo_ready"] = False
+            state["pyo_server"] = None
+        print(f"Audio disabled: pyo failed to start: {e}", file=sys.stderr)
+        return
     active_id = output_id if output_id is not None else default_id
     active_name = next((d["name"] for d in devices if d["id"] == active_id), None)
     with state_lock:
