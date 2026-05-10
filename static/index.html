@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sample Splitter</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'SF Mono', 'Consolas', monospace;
+    background: #0f0f0f;
+    color: #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  header {
+    padding: 10px 16px;
+    background: #1a1a1a;
+    border-bottom: 1px solid #2a2a2a;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+
+  header h1 { font-size: 14px; color: #888; letter-spacing: 2px; text-transform: uppercase; }
+
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ---- Left panel: file list ---- */
+  .sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    background: #141414;
+    border-right: 1px solid #2a2a2a;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sidebar-title {
+    padding: 8px 12px;
+    font-size: 11px;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 1px solid #222;
+  }
+
+  #file-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+  }
+
+  #file-list::-webkit-scrollbar { width: 4px; }
+  #file-list::-webkit-scrollbar-track { background: #141414; }
+  #file-list::-webkit-scrollbar-thumb { background: #333; }
+
+  .file-item {
+    padding: 7px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    color: #aaa;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-left: 2px solid transparent;
+  }
+
+  .file-item:hover { background: #1e1e1e; color: #ddd; }
+  .file-item.active { color: #4af; border-left-color: #4af; background: #1a2a3a; }
+
+  /* ---- Right panel: waveform + controls ---- */
+  .content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 16px;
+    gap: 14px;
+  }
+
+  /* ---- Controls row ---- */
+  .controls {
+    display: flex;
+    gap: 16px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+
+  .control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  label {
+    font-size: 10px;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  select, input[type="number"], input[type="range"] {
+    background: #1e1e1e;
+    border: 1px solid #333;
+    color: #ddd;
+    padding: 5px 8px;
+    font-size: 12px;
+    font-family: inherit;
+    border-radius: 3px;
+    outline: none;
+    min-width: 140px;
+  }
+
+  select:focus, input:focus { border-color: #4af; }
+
+  input[type="range"] {
+    padding: 0;
+    min-width: 100px;
+    accent-color: #4af;
+  }
+
+  button {
+    background: #1e1e1e;
+    border: 1px solid #444;
+    color: #ccc;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-family: inherit;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  button:hover { background: #2a2a2a; border-color: #4af; color: #4af; }
+  button.primary { background: #1a3a5a; border-color: #4af; color: #4af; }
+  button.primary:hover { background: #1f4a6f; }
+
+  .mode-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .mode-btn {
+    padding: 4px 10px;
+    font-size: 11px;
+    border-radius: 3px;
+  }
+
+  .mode-btn.active { background: #1a3a5a; border-color: #4af; color: #4af; }
+
+  /* ---- Waveform ---- */
+  .waveform-wrap {
+    flex: 1;
+    position: relative;
+    background: #111;
+    border: 1px solid #2a2a2a;
+    border-radius: 4px;
+    overflow: hidden;
+    min-height: 120px;
+  }
+
+  #waveform-canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .waveform-placeholder {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #333;
+    font-size: 13px;
+    pointer-events: none;
+  }
+
+  /* ---- Split list ---- */
+  .split-info {
+    flex-shrink: 0;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-size: 12px;
+    color: #555;
+  }
+
+  #split-count { color: #4af; font-weight: bold; }
+
+  /* ---- Status bar ---- */
+  .status-bar {
+    flex-shrink: 0;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    font-size: 11px;
+    color: #444;
+    padding-top: 4px;
+    border-top: 1px solid #1e1e1e;
+  }
+
+  .status-bar .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: #333;
+    display: inline-block;
+  }
+  .status-bar .dot.green { background: #3d3; }
+  .status-bar .dot.yellow { background: #da3; }
+
+  #status-midi { color: #888; }
+  #status-file { color: #888; }
+
+  .voice-indicator {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+  }
+
+  .voice-pip {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #222;
+    transition: background 0.1s;
+  }
+  .voice-pip.active { background: #4af; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Sample Splitter</h1>
+  <div style="flex:1"></div>
+  <div class="control-group">
+    <label>MIDI Port</label>
+    <select id="midi-port-select" onchange="setMidiPort(this.value)">
+      <option value="">— select port —</option>
+    </select>
+  </div>
+  <div class="control-group">
+    <label>Base Note</label>
+    <input type="number" id="base-note" value="48" min="0" max="127" style="min-width:60px;width:60px"
+           onchange="setBaseNote(this.value)">
+  </div>
+</header>
+
+<div class="main">
+
+  <div class="sidebar">
+    <div class="sidebar-title">MP3 Files</div>
+    <div id="file-list"></div>
+  </div>
+
+  <div class="content">
+
+    <!-- Controls -->
+    <div class="controls">
+      <div class="control-group">
+        <label>Split Mode</label>
+        <div class="mode-row">
+          <button class="mode-btn active" id="mode-silence" onclick="setMode('silence')">Silence</button>
+          <button class="mode-btn" id="mode-fixed" onclick="setMode('fixed')">Fixed</button>
+        </div>
+      </div>
+
+      <div class="control-group" id="ctrl-interval" style="display:none">
+        <label>Interval (sec)</label>
+        <input type="number" id="interval" value="10" min="0.5" max="60" step="0.5" style="min-width:80px;width:80px">
+      </div>
+
+      <div class="control-group" id="ctrl-thresh">
+        <label>Silence Thresh <span id="thresh-val">0.01</span></label>
+        <input type="range" id="silence-thresh" min="0.001" max="0.1" step="0.001" value="0.01"
+               oninput="document.getElementById('thresh-val').textContent=parseFloat(this.value).toFixed(3)">
+      </div>
+
+      <div class="control-group" id="ctrl-min">
+        <label>Min Silence (sec)</label>
+        <input type="number" id="silence-min" value="0.5" min="0.1" max="5" step="0.1" style="min-width:80px;width:80px">
+      </div>
+
+      <button class="primary" onclick="reSplit()" style="align-self:flex-end">⟳ Re-split</button>
+    </div>
+
+    <!-- Waveform -->
+    <div class="waveform-wrap" id="waveform-wrap">
+      <canvas id="waveform-canvas"></canvas>
+      <div class="waveform-placeholder" id="waveform-placeholder">Select an MP3 file to begin</div>
+    </div>
+
+    <!-- Split info + status -->
+    <div class="split-info">
+      <span>Splits: <span id="split-count">—</span></span>
+      <span id="split-range" style="color:#444"></span>
+    </div>
+
+    <div class="status-bar">
+      <span><span class="dot" id="dot-midi"></span> MIDI: <span id="status-midi">not connected</span></span>
+      <span><span class="dot" id="dot-audio"></span> Audio: <span id="status-audio">idle</span></span>
+      <span id="status-file">No file loaded</span>
+      <div style="flex:1"></div>
+      <div class="voice-indicator" id="voice-pips"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let currentFile = null;
+let cueData = null;
+let waveformData = null;
+let splitMode = 'silence';
+let pollInterval = null;
+const MAX_VOICES = 8;
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+window.addEventListener('load', () => {
+  loadFiles();
+  loadMidiPorts();
+  buildVoicePips();
+  startPolling();
+  resizeCanvas();
+  window.addEventListener('resize', () => { resizeCanvas(); drawWaveform(); });
+});
+
+function buildVoicePips() {
+  const wrap = document.getElementById('voice-pips');
+  wrap.innerHTML = '';
+  for (let i = 0; i < MAX_VOICES; i++) {
+    const pip = document.createElement('div');
+    pip.className = 'voice-pip';
+    pip.id = `pip-${i}`;
+    wrap.appendChild(pip);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File list
+// ---------------------------------------------------------------------------
+async function loadFiles() {
+  const resp = await fetch('/api/files');
+  const data = await resp.json();
+  const list = document.getElementById('file-list');
+  list.innerHTML = '';
+  data.files.forEach(f => {
+    const div = document.createElement('div');
+    div.className = 'file-item';
+    div.textContent = f;
+    div.title = f;
+    div.onclick = () => selectFile(f, div);
+    list.appendChild(div);
+  });
+}
+
+async function selectFile(filename, el) {
+  document.querySelectorAll('.file-item').forEach(e => e.classList.remove('active'));
+  el.classList.add('active');
+  currentFile = filename;
+  document.getElementById('status-file').textContent = filename;
+  document.getElementById('waveform-placeholder').style.display = 'none';
+  await analyze();
+}
+
+// ---------------------------------------------------------------------------
+// MIDI
+// ---------------------------------------------------------------------------
+async function loadMidiPorts() {
+  const resp = await fetch('/api/midi_ports');
+  const data = await resp.json();
+  const sel = document.getElementById('midi-port-select');
+  sel.innerHTML = '<option value="">— select port —</option>';
+  data.ports.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p;
+    if (p === data.current) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  updateMidiStatus(data.current);
+}
+
+async function setMidiPort(port) {
+  if (!port) return;
+  await fetch(`/api/set_midi?port=${encodeURIComponent(port)}`);
+  updateMidiStatus(port);
+}
+
+function updateMidiStatus(port) {
+  const dot = document.getElementById('dot-midi');
+  const lbl = document.getElementById('status-midi');
+  if (port) {
+    dot.classList.add('green');
+    lbl.textContent = port;
+  } else {
+    dot.classList.remove('green');
+    lbl.textContent = 'not connected';
+  }
+}
+
+async function setBaseNote(val) {
+  await fetch(`/api/set_base_note?note=${encodeURIComponent(val)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Split mode
+// ---------------------------------------------------------------------------
+function setMode(mode) {
+  splitMode = mode;
+  document.getElementById('mode-silence').classList.toggle('active', mode === 'silence');
+  document.getElementById('mode-fixed').classList.toggle('active', mode === 'fixed');
+  document.getElementById('ctrl-interval').style.display = mode === 'fixed' ? '' : 'none';
+  document.getElementById('ctrl-thresh').style.display = mode === 'silence' ? '' : 'none';
+  document.getElementById('ctrl-min').style.display = mode === 'silence' ? '' : 'none';
+  if (currentFile) analyze();
+}
+
+async function reSplit() {
+  if (currentFile) await analyze();
+}
+
+// ---------------------------------------------------------------------------
+// Analyze
+// ---------------------------------------------------------------------------
+async function analyze() {
+  if (!currentFile) return;
+
+  const mode = splitMode;
+  const interval = document.getElementById('interval').value;
+  const thresh = document.getElementById('silence-thresh').value;
+  const silenceMin = document.getElementById('silence-min').value;
+
+  document.getElementById('split-count').textContent = '…';
+  document.getElementById('waveform-placeholder').style.display = 'none';
+
+  const params = new URLSearchParams({
+    file: currentFile,
+    mode,
+    interval,
+    silence_thresh: thresh,
+    silence_min: silenceMin,
+  });
+
+  const resp = await fetch(`/api/analyze?${params}`);
+  const data = await resp.json();
+
+  if (data.error) {
+    alert('Error: ' + data.error);
+    return;
+  }
+
+  cueData = data.cue_data;
+  waveformData = data.waveform;
+
+  document.getElementById('split-count').textContent = cueData.num_splits;
+
+  const splits = cueData.splits;
+  if (splits.length > 1) {
+    const avg = (cueData.duration / splits.length).toFixed(1);
+    document.getElementById('split-range').textContent =
+      `avg ${avg}s each · ${cueData.duration.toFixed(1)}s total`;
+  } else {
+    document.getElementById('split-range').textContent = '';
+  }
+
+  drawWaveform();
+}
+
+// ---------------------------------------------------------------------------
+// Waveform canvas
+// ---------------------------------------------------------------------------
+function resizeCanvas() {
+  const canvas = document.getElementById('waveform-canvas');
+  const wrap = document.getElementById('waveform-wrap');
+  canvas.width = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+}
+
+function drawWaveform() {
+  const canvas = document.getElementById('waveform-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (!waveformData || waveformData.length === 0) return;
+
+  const mid = H / 2;
+  const data = waveformData;
+  const n = data.length;
+
+  // Draw split regions (alternating shaded bands)
+  if (cueData && cueData.splits && cueData.duration > 0) {
+    const splits = cueData.splits;
+    const dur = cueData.duration;
+    for (let i = 0; i < splits.length; i++) {
+      const x0 = Math.floor((splits[i] / dur) * W);
+      const x1 = i + 1 < splits.length
+        ? Math.floor((splits[i + 1] / dur) * W)
+        : W;
+      ctx.fillStyle = i % 2 === 0
+        ? 'rgba(60, 120, 200, 0.06)'
+        : 'rgba(60, 200, 120, 0.06)';
+      ctx.fillRect(x0, 0, x1 - x0, H);
+    }
+  }
+
+  // Draw waveform
+  ctx.beginPath();
+  ctx.strokeStyle = '#3a7fc1';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < n; i++) {
+    const x = (i / n) * W;
+    const amp = data[i] * mid * 0.9;
+    ctx.moveTo(x, mid - amp);
+    ctx.lineTo(x, mid + amp);
+  }
+  ctx.stroke();
+
+  // Draw split point lines + note labels
+  if (cueData && cueData.splits && cueData.duration > 0) {
+    const splits = cueData.splits;
+    const dur = cueData.duration;
+    const baseNote = parseInt(document.getElementById('base-note').value) || 48;
+
+    splits.forEach((t, i) => {
+      const x = Math.floor((t / dur) * W);
+
+      // Line
+      ctx.beginPath();
+      ctx.strokeStyle = i === 0 ? 'rgba(255,255,255,0.15)' : '#e8a020';
+      ctx.lineWidth = i === 0 ? 1 : 1.5;
+      ctx.setLineDash(i === 0 ? [] : [4, 4]);
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, H);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Label (note name + split index)
+      if (i < 128) {
+        const noteName = midiNoteName(baseNote + i);
+        ctx.fillStyle = '#e8a020';
+        ctx.font = '10px SF Mono, Consolas, monospace';
+        ctx.fillText(noteName, x + 3, 13);
+        ctx.fillStyle = '#555';
+        ctx.fillText(`${t.toFixed(2)}s`, x + 3, 25);
+      }
+    });
+  }
+}
+
+function midiNoteName(n) {
+  const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const oct = Math.floor(n / 12) - 1;
+  return names[n % 12] + oct;
+}
+
+// ---------------------------------------------------------------------------
+// Polling (active voices)
+// ---------------------------------------------------------------------------
+function startPolling() {
+  pollInterval = setInterval(async () => {
+    const resp = await fetch('/api/state');
+    const data = await resp.json();
+
+    // Voice pips
+    const voices = data.active_voices || [];
+    for (let i = 0; i < MAX_VOICES; i++) {
+      const pip = document.getElementById(`pip-${i}`);
+      if (pip) pip.classList.toggle('active', i < voices.length);
+    }
+
+    // Audio status
+    const audioDot = document.getElementById('dot-audio');
+    const audioLbl = document.getElementById('status-audio');
+    if (voices.length > 0) {
+      audioDot.classList.add('green');
+      audioLbl.textContent = `${voices.length} voice${voices.length > 1 ? 's' : ''} active`;
+    } else {
+      audioDot.classList.remove('green');
+      audioLbl.textContent = 'idle';
+    }
+
+    // Re-draw if base note changed
+    drawWaveform();
+
+  }, 200);
+}
+</script>
+</body>
+</html>

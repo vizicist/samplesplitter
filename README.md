@@ -1,80 +1,51 @@
 # samplesplitter
 
-Polyphonic MIDI-driven sample splitter and player for short (10–30s) MP3 files.
+Polyphonic MIDI-driven MP3 sample splitter and player with a browser UI.
 
 ## Features
 
-- Split an MP3 by silence detection or fixed intervals
+- Browser UI at `http://localhost:9876` — select MP3s, adjust split settings, view waveform
+- Split by silence detection or fixed intervals — re-splits live as you change settings
+- Waveform visualisation with labelled split markers (MIDI note names + timestamps)
 - Each split mapped to a MIDI note (starting at C3 by default)
 - Polyphonic playback — multiple splits simultaneously
-- Pitch bend controls pitch shifting (±2 semitones by default)
+- Pitch bend for pitch shifting (±2 semitones)
 - Velocity controls volume
 - Note-off stops playback
+- MIDI port selectable in the UI
 
 ## Requirements
 
 - Python 3.8+
-- [ffmpeg](https://ffmpeg.org/) (for MP3 decoding)
+- [ffmpeg](https://ffmpeg.org/)
 - `pyo` — audio engine
 - `mido` + `python-rtmidi` — MIDI input
 
 ```bash
 pip3 install pyo mido python-rtmidi
+brew install ffmpeg   # macOS
 ```
 
 ## Usage
 
-### Step 1 — Generate cue points
-
 ```bash
-# By silence detection (default)
-python3 splitter.py mysample.mp3
-
-# By fixed 10-second intervals
-python3 splitter.py mysample.mp3 --mode fixed --interval 10
-
-# Silence options
-python3 splitter.py mysample.mp3 --silence-thresh 0.02 --silence-min 0.3
+python3 samplesplitter.py --dir /path/to/mp3s
 ```
 
-Writes `mysample.cues.json` with split timestamps.
+Opens a browser at `http://localhost:9876` automatically.
 
-### Step 2 — Play with MIDI
-
-```bash
-# List available MIDI ports
-python3 player.py --list-ports
-
-# Play (uses first available MIDI port)
-python3 player.py mysample.mp3
-
-# Specify MIDI port (partial name match)
-python3 player.py mysample.mp3 --midi-port "Keystep"
-
-# Custom base note (default: 48 = C3)
-python3 player.py mysample.mp3 --base-note 36
-
-# Listen on specific MIDI channel (default: 0 = all)
-python3 player.py mysample.mp3 --base-channel 1
+```
+Options:
+  --dir DIR          Directory containing MP3 files (required)
+  --port PORT        HTTP port (default: 9876)
+  --base-note NOTE   MIDI note number for split 0 (default: 48 = C3)
 ```
 
 ## MIDI Mapping
 
 | Control | Action |
 |---|---|
-| Note on (base note + N) | Play split N at current pitch |
-| Note off | Stop that split's playback |
-| Velocity | Volume (0–127 → 0.0–1.0) |
+| Note on (base + N) | Play split N |
+| Note off | Stop that split |
+| Velocity | Volume (0–127 → 0–1) |
 | Pitch bend | Pitch shift ±2 semitones |
-
-## Cue File Format
-
-```json
-{
-  "file": "/path/to/mysample.mp3",
-  "duration": 28.43,
-  "mode": "silence",
-  "splits": [0.0, 4.2, 8.7, 13.1, 19.5, 24.0],
-  "num_splits": 6
-}
-```
