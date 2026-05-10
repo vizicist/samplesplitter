@@ -16,20 +16,24 @@ Polyphonic MIDI-driven MP3 sample splitter and player with a browser UI.
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.11 on Windows
 - [ffmpeg](https://ffmpeg.org/)
 - `pyo` — audio engine
 - `mido` + `python-rtmidi` — MIDI input
 
 ```bash
-pip3 install pyo mido python-rtmidi
+py -3.11 -m pip install --user pyo mido python-rtmidi
 brew install ffmpeg   # macOS
 ```
+
+On Windows, `pyo` has prebuilt wheels for Python 3.11. Python 3.13 may try to
+compile `pyo` from source and fail unless native audio headers such as
+PortAudio are installed.
 
 ## Usage
 
 ```bash
-python3 samplesplitter.py --dir /path/to/mp3s
+py -3.11 samplesplitter.py --dir /path/to/mp3s
 ```
 
 Opens a browser at `http://localhost:9876` automatically.

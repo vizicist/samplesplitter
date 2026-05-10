@@ -24,8 +24,15 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-import mido
-import pyo
+try:
+    import mido
+except ImportError:
+    mido = None
+
+try:
+    import pyo
+except ImportError:
+    pyo = None
 
 # ---------------------------------------------------------------------------
 # ffmpeg path resolution
@@ -62,11 +69,13 @@ state = {
     "cue_data": None,
     "waveform": None,          # list of floats 0.0-1.0 (downsampled RMS)
     "midi_port_name": None,
+    "midi_error": None,
     "base_note": 48,
     "pitch_bend_semitones": 0.0,
     "active_voices": {},       # note -> pyo.SfPlayer
     "pyo_server": None,
     "pyo_ready": False,
+    "audio_error": None,
     "midi_thread": None,
     "midi_stop": threading.Event(),
 }
@@ -76,6 +85,15 @@ state_lock = threading.Lock()
 PITCH_BEND_RANGE = 2.0
 PITCH_BEND_MAX = 8192
 WAVEFORM_POINTS = 1200        # number of amplitude points sent to browser
+
+
+def get_midi_input_names():
+    if mido is None:
+        return [], "mido is not installed"
+    try:
+        return mido.get_input_names(), None
+    except Exception as e:
+        return [], f"MIDI backend unavailable: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -193,11 +211,19 @@ def analyze_file(mp3_path, mode="silence", interval=10.0,
 # ---------------------------------------------------------------------------
 
 def init_pyo():
+    if pyo is None:
+        with state_lock:
+            state["audio_error"] = "pyo is not installed"
+            state["pyo_ready"] = False
+        print("Audio disabled: pyo is not installed.", file=sys.stderr)
+        return
+
     server = pyo.Server(duplex=0).boot()
     server.start()
     with state_lock:
         state["pyo_server"] = server
         state["pyo_ready"] = True
+        state["audio_error"] = None
     print("pyo audio server ready.")
 
 
@@ -280,6 +306,10 @@ def player_stop_all():
 # ---------------------------------------------------------------------------
 
 def midi_listener(port_name, stop_event):
+    if mido is None:
+        print("MIDI disabled: mido is not installed.", file=sys.stderr)
+        return
+
     print(f"MIDI: opening port '{port_name}'")
     try:
         with mido.open_input(port_name) as port:
@@ -301,6 +331,9 @@ def handle_midi_message(msg):
 
 
 def start_midi(port_name):
+    if mido is None:
+        raise RuntimeError("mido is not installed")
+
     with state_lock:
         # Stop existing thread
         if state["midi_thread"] and state["midi_thread"].is_alive():
@@ -308,6 +341,7 @@ def start_midi(port_name):
             state["midi_thread"].join(timeout=2)
         state["midi_stop"] = threading.Event()
         state["midi_port_name"] = port_name
+        state["midi_error"] = None
         t = threading.Thread(target=midi_listener,
                              args=(port_name, state["midi_stop"]),
                              daemon=True)
@@ -343,6 +377,16 @@ def serve_file(handler, path, content_type):
         handler.end_headers()
 
 
+def resolve_mp3_file(filename):
+    if not filename:
+        return None
+    mp3_dir = Path(state["mp3_dir"]).resolve()
+    mp3_path = (mp3_dir / filename).resolve()
+    if mp3_path.parent != mp3_dir or mp3_path.suffix.lower() != ".mp3":
+        return None
+    return mp3_path if mp3_path.exists() else None
+
+
 class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
@@ -364,10 +408,25 @@ class Handler(BaseHTTPRequestHandler):
             )
             json_response(self, {"files": files, "dir": str(mp3_dir)})
 
+        elif path == "/api/media":
+            filename = params.get("file", [None])[0]
+            mp3_path = resolve_mp3_file(filename)
+            if mp3_path is None:
+                self.send_response(404)
+                self.end_headers()
+                return
+            serve_file(self, mp3_path, "audio/mpeg")
+
         elif path == "/api/midi_ports":
-            ports = mido.get_input_names()
-            current = state["midi_port_name"]
-            json_response(self, {"ports": ports, "current": current})
+            ports, error = get_midi_input_names()
+            with state_lock:
+                state["midi_error"] = error
+                current = state["midi_port_name"]
+            json_response(self, {
+                "ports": ports,
+                "current": current,
+                "error": error,
+            })
 
         elif path == "/api/state":
             with state_lock:
@@ -376,15 +435,18 @@ class Handler(BaseHTTPRequestHandler):
                     "cue_data": state["cue_data"],
                     "waveform": state["waveform"],
                     "midi_port": state["midi_port_name"],
+                    "midi_error": state["midi_error"],
                     "base_note": state["base_note"],
                     "active_voices": list(state["active_voices"].keys()),
+                    "pyo_ready": state["pyo_ready"],
+                    "audio_error": state["audio_error"],
                 }
             json_response(self, resp)
 
         elif path == "/api/analyze":
             filename = params.get("file", [None])[0]
-            mode = params.get("mode", ["silence"])[0]
-            interval = float(params.get("interval", [10.0])[0])
+            mode = params.get("mode", ["fixed"])[0]
+            interval = float(params.get("interval", [1.0])[0])
             silence_thresh = float(params.get("silence_thresh", [0.01])[0])
             silence_min = float(params.get("silence_min", [0.5])[0])
 
@@ -392,8 +454,8 @@ class Handler(BaseHTTPRequestHandler):
                 json_response(self, {"error": "missing file"}, 400)
                 return
 
-            mp3_path = Path(state["mp3_dir"]) / filename
-            if not mp3_path.exists():
+            mp3_path = resolve_mp3_file(filename)
+            if mp3_path is None:
                 json_response(self, {"error": "file not found"}, 404)
                 return
 
@@ -415,6 +477,9 @@ class Handler(BaseHTTPRequestHandler):
             port = params.get("port", [None])[0]
             if not port:
                 json_response(self, {"error": "missing port"}, 400)
+                return
+            if mido is None:
+                json_response(self, {"error": "mido is not installed"}, 503)
                 return
             try:
                 start_midi(port)

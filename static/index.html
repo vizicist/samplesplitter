@@ -200,6 +200,46 @@
 
   #split-count { color: #4af; font-weight: bold; }
 
+  .split-buttons {
+    flex-shrink: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+    gap: 6px;
+    max-height: 96px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .split-play-btn {
+    min-width: 0;
+    height: 34px;
+    padding: 4px 8px;
+    text-align: left;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    overflow: hidden;
+  }
+
+  .split-play-btn span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .split-play-btn.active {
+    background: #1a3a5a;
+    border-color: #4af;
+    color: #4af;
+  }
+
+  .split-time {
+    color: #666;
+    font-size: 10px;
+    flex-shrink: 0;
+  }
+
   /* ---- Status bar ---- */
   .status-bar {
     flex-shrink: 0;
@@ -271,23 +311,23 @@
       <div class="control-group">
         <label>Split Mode</label>
         <div class="mode-row">
-          <button class="mode-btn active" id="mode-silence" onclick="setMode('silence')">Silence</button>
-          <button class="mode-btn" id="mode-fixed" onclick="setMode('fixed')">Fixed</button>
+          <button class="mode-btn" id="mode-silence" onclick="setMode('silence')">Silence</button>
+          <button class="mode-btn active" id="mode-fixed" onclick="setMode('fixed')">Fixed</button>
         </div>
       </div>
 
-      <div class="control-group" id="ctrl-interval" style="display:none">
+      <div class="control-group" id="ctrl-interval">
         <label>Interval (sec)</label>
-        <input type="number" id="interval" value="10" min="0.5" max="60" step="0.5" style="min-width:80px;width:80px">
+        <input type="number" id="interval" value="1" min="0.5" max="60" step="0.5" style="min-width:80px;width:80px">
       </div>
 
-      <div class="control-group" id="ctrl-thresh">
+      <div class="control-group" id="ctrl-thresh" style="display:none">
         <label>Silence Thresh <span id="thresh-val">0.01</span></label>
         <input type="range" id="silence-thresh" min="0.001" max="0.1" step="0.001" value="0.01"
                oninput="document.getElementById('thresh-val').textContent=parseFloat(this.value).toFixed(3)">
       </div>
 
-      <div class="control-group" id="ctrl-min">
+      <div class="control-group" id="ctrl-min" style="display:none">
         <label>Min Silence (sec)</label>
         <input type="number" id="silence-min" value="0.5" min="0.1" max="5" step="0.1" style="min-width:80px;width:80px">
       </div>
@@ -307,6 +347,9 @@
       <span id="split-range" style="color:#444"></span>
     </div>
 
+    <div class="split-buttons" id="split-buttons"></div>
+    <audio id="manual-player" preload="auto"></audio>
+
     <div class="status-bar">
       <span><span class="dot" id="dot-midi"></span> MIDI: <span id="status-midi">not connected</span></span>
       <span><span class="dot" id="dot-audio"></span> Audio: <span id="status-audio">idle</span></span>
@@ -325,8 +368,10 @@
 let currentFile = null;
 let cueData = null;
 let waveformData = null;
-let splitMode = 'silence';
+let splitMode = 'fixed';
 let pollInterval = null;
+let manualStopTimer = null;
+let manualPlayingIndex = null;
 const MAX_VOICES = 8;
 
 // ---------------------------------------------------------------------------
@@ -371,6 +416,7 @@ async function loadFiles() {
 }
 
 async function selectFile(filename, el) {
+  stopManualPlayback();
   document.querySelectorAll('.file-item').forEach(e => e.classList.remove('active'));
   el.classList.add('active');
   currentFile = filename;
@@ -394,7 +440,7 @@ async function loadMidiPorts() {
     if (p === data.current) opt.selected = true;
     sel.appendChild(opt);
   });
-  updateMidiStatus(data.current);
+  updateMidiStatus(data.current, data.error);
 }
 
 async function setMidiPort(port) {
@@ -403,20 +449,31 @@ async function setMidiPort(port) {
   updateMidiStatus(port);
 }
 
-function updateMidiStatus(port) {
+function updateMidiStatus(port, error = null) {
   const dot = document.getElementById('dot-midi');
   const lbl = document.getElementById('status-midi');
-  if (port) {
+  if (error) {
+    dot.classList.remove('green');
+    dot.classList.add('yellow');
+    lbl.textContent = 'unavailable';
+    lbl.title = error;
+  } else if (port) {
     dot.classList.add('green');
+    dot.classList.remove('yellow');
     lbl.textContent = port;
+    lbl.title = port;
   } else {
     dot.classList.remove('green');
+    dot.classList.remove('yellow');
     lbl.textContent = 'not connected';
+    lbl.title = '';
   }
 }
 
 async function setBaseNote(val) {
   await fetch(`/api/set_base_note?note=${encodeURIComponent(val)}`);
+  renderSplitButtons();
+  drawWaveform();
 }
 
 // ---------------------------------------------------------------------------
@@ -441,6 +498,7 @@ async function reSplit() {
 // ---------------------------------------------------------------------------
 async function analyze() {
   if (!currentFile) return;
+  stopManualPlayback();
 
   const mode = splitMode;
   const interval = document.getElementById('interval').value;
@@ -480,7 +538,90 @@ async function analyze() {
     document.getElementById('split-range').textContent = '';
   }
 
+  renderSplitButtons();
   drawWaveform();
+}
+
+// ---------------------------------------------------------------------------
+// Manual browser playback
+// ---------------------------------------------------------------------------
+function renderSplitButtons() {
+  const wrap = document.getElementById('split-buttons');
+  wrap.innerHTML = '';
+  if (!currentFile || !cueData || !cueData.splits) return;
+
+  const baseNote = parseInt(document.getElementById('base-note').value) || 48;
+  cueData.splits.forEach((start, i) => {
+    const end = i + 1 < cueData.splits.length ? cueData.splits[i + 1] : cueData.duration;
+    const btn = document.createElement('button');
+    btn.className = 'split-play-btn';
+    btn.type = 'button';
+    btn.dataset.splitIndex = i;
+    btn.title = `${midiNoteName(baseNote + i)} · ${start.toFixed(2)}s to ${end.toFixed(2)}s`;
+    btn.innerHTML = `<span>▶ ${midiNoteName(baseNote + i)}</span><span class="split-time">${start.toFixed(1)}s</span>`;
+    btn.onclick = () => playSplit(i);
+    wrap.appendChild(btn);
+  });
+}
+
+function setManualButtonActive(index) {
+  document.querySelectorAll('.split-play-btn').forEach(btn => {
+    btn.classList.toggle('active', Number(btn.dataset.splitIndex) === index);
+  });
+}
+
+function stopManualPlayback() {
+  const audio = document.getElementById('manual-player');
+  if (manualStopTimer) {
+    clearTimeout(manualStopTimer);
+    manualStopTimer = null;
+  }
+  audio.pause();
+  manualPlayingIndex = null;
+  setManualButtonActive(null);
+}
+
+function waitForAudioMetadata(audio) {
+  if (audio.readyState >= 1) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const onLoaded = () => cleanup(resolve);
+    const onError = () => cleanup(() => reject(new Error('could not load MP3')));
+    const cleanup = (done) => {
+      audio.removeEventListener('loadedmetadata', onLoaded);
+      audio.removeEventListener('error', onError);
+      done();
+    };
+    audio.addEventListener('loadedmetadata', onLoaded, { once: true });
+    audio.addEventListener('error', onError, { once: true });
+  });
+}
+
+async function playSplit(index) {
+  if (!currentFile || !cueData || !cueData.splits) return;
+  if (manualPlayingIndex === index) {
+    stopManualPlayback();
+    return;
+  }
+
+  const audio = document.getElementById('manual-player');
+  const start = cueData.splits[index];
+  const end = index + 1 < cueData.splits.length ? cueData.splits[index + 1] : cueData.duration;
+  const durationMs = Math.max(0, (end - start) * 1000);
+
+  stopManualPlayback();
+  manualPlayingIndex = index;
+  setManualButtonActive(index);
+  audio.src = `/api/media?file=${encodeURIComponent(currentFile)}`;
+
+  try {
+    await waitForAudioMetadata(audio);
+    audio.currentTime = start;
+    await audio.play();
+    manualStopTimer = setTimeout(stopManualPlayback, durationMs);
+  } catch (e) {
+    stopManualPlayback();
+    alert('Playback failed: ' + e.message);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -591,12 +732,21 @@ function startPolling() {
     // Audio status
     const audioDot = document.getElementById('dot-audio');
     const audioLbl = document.getElementById('status-audio');
-    if (voices.length > 0) {
+    if (data.audio_error) {
+      audioDot.classList.remove('green');
+      audioDot.classList.add('yellow');
+      audioLbl.textContent = 'unavailable';
+      audioLbl.title = data.audio_error;
+    } else if (voices.length > 0) {
       audioDot.classList.add('green');
+      audioDot.classList.remove('yellow');
       audioLbl.textContent = `${voices.length} voice${voices.length > 1 ? 's' : ''} active`;
+      audioLbl.title = '';
     } else {
       audioDot.classList.remove('green');
+      audioDot.classList.remove('yellow');
       audioLbl.textContent = 'idle';
+      audioLbl.title = '';
     }
 
     // Re-draw if base note changed
