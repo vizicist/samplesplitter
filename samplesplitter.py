@@ -70,12 +70,16 @@ state = {
     "waveform": None,          # list of floats 0.0-1.0 (downsampled RMS)
     "midi_port_name": None,
     "midi_error": None,
+    "midi_activity_count": 0,
+    "midi_activity_time": None,
     "base_note": 48,
     "pitch_bend_semitones": 0.0,
     "active_voices": {},       # note -> pyo.SfPlayer
     "pyo_server": None,
     "pyo_ready": False,
     "audio_error": None,
+    "audio_output_id": None,
+    "audio_output_name": None,
     "midi_thread": None,
     "midi_stop": threading.Event(),
 }
@@ -94,6 +98,50 @@ def get_midi_input_names():
         return mido.get_input_names(), None
     except Exception as e:
         return [], f"MIDI backend unavailable: {e}"
+
+
+def get_audio_output_devices():
+    if pyo is None:
+        return [], None, "pyo is not installed"
+    try:
+        _, output_infos = pyo.pa_get_devices_infos()
+        default_id = pyo.pa_get_default_output()
+        preferred_host_order = {0: 0, 1: 1, 3: 2, 4: 3}
+        by_name = {}
+        for device_id, info in output_infos.items():
+            name = info["name"]
+            host_api = info["host api index"]
+            normalized = name.lower()
+            if (
+                host_api == 4 and (
+                    normalized.startswith("speakers 1 ") or
+                    normalized.startswith("speakers 2 ") or
+                    normalized.startswith("headphones 1 ") or
+                    normalized.startswith("headphones 2 ")
+                )
+            ):
+                continue
+            rank = preferred_host_order.get(host_api, 99)
+            if int(device_id) == int(default_id):
+                rank = -1
+            current = by_name.get(normalized)
+            if current is None or rank < current["rank"]:
+                by_name[normalized] = {
+                    "id": int(device_id),
+                    "name": name,
+                    "rank": rank,
+                }
+
+        devices = sorted(
+            (
+                {"id": d["id"], "name": d["name"]}
+                for d in by_name.values()
+            ),
+            key=lambda d: (0 if d["id"] == int(default_id) else 1, d["name"].lower())
+        )
+        return devices, int(default_id), None
+    except Exception as e:
+        return [], None, f"Audio outputs unavailable: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +224,100 @@ def detect_splits_fixed(duration, interval_sec=10.0):
     return splits
 
 
+def detect_splits_words(samples, frame_rate, duration,
+                        silence_thresh=0.01, min_silence_sec=0.12,
+                        min_word_sec=0.16, max_word_sec=0.65):
+    block_sec = 0.01
+    block_size = max(1, int(frame_rate * block_sec))
+    min_gap_blocks = max(1, int(min_silence_sec / block_sec))
+    min_word_blocks = max(1, int(min_word_sec / block_sec))
+    max_word_blocks = max(min_word_blocks + 1, int(max_word_sec / block_sec))
+    num_blocks = len(samples) // block_size
+
+    if num_blocks == 0:
+        return [0.0]
+
+    rms_values = []
+    for i in range(num_blocks):
+        chunk = samples[i * block_size: (i + 1) * block_size]
+        rms = math.sqrt(sum(s * s for s in chunk) / len(chunk))
+        rms_values.append(rms)
+
+    smooth_radius = 3
+    envelope = []
+    for i in range(len(rms_values)):
+        start = max(0, i - smooth_radius)
+        end = min(len(rms_values), i + smooth_radius + 1)
+        envelope.append(sum(rms_values[start:end]) / (end - start))
+
+    sorted_rms = sorted(rms_values)
+    noise_floor = sorted_rms[max(0, int(len(sorted_rms) * 0.2) - 1)]
+    peak = max(envelope) or 1.0
+    threshold = max(silence_thresh, noise_floor * 3.0, peak * 0.04)
+    voiced = [rms >= threshold for rms in envelope]
+
+    runs = []
+    i = 0
+    while i < len(voiced):
+        if voiced[i]:
+            start = i
+            while i < len(voiced) and voiced[i]:
+                i += 1
+            runs.append([start, i])
+        else:
+            i += 1
+
+    if not runs:
+        return [0.0]
+
+    merged = [runs[0]]
+    for start, end in runs[1:]:
+        prev = merged[-1]
+        if start - prev[1] < min_gap_blocks:
+            prev[1] = end
+        else:
+            merged.append([start, end])
+
+    split_blocks = []
+    for start, end in merged:
+        if end - start >= min_word_blocks:
+            split_blocks.append(start)
+
+            segment_start = start
+            while segment_start + max_word_blocks < end:
+                search_start = segment_start + min_word_blocks
+                search_end = min(segment_start + max_word_blocks, end - min_word_blocks)
+                if search_end <= search_start:
+                    break
+
+                valley = min(
+                    range(search_start, search_end),
+                    key=lambda idx: envelope[idx]
+                )
+                local_peak = max(envelope[segment_start:search_end]) or peak
+                if envelope[valley] < local_peak * 0.75:
+                    split_blocks.append(valley)
+                    segment_start = valley
+                else:
+                    segment_start += max_word_blocks
+
+    if not split_blocks:
+        return [0.0]
+
+    split_blocks = sorted(set(split_blocks))
+    splits = []
+    for block in split_blocks:
+        t = round(block * block_sec, 4)
+        if not splits or t - splits[-1] >= min_word_sec:
+            splits.append(t)
+
+    if splits[0] > 0.05:
+        splits.insert(0, 0.0)
+    else:
+        splits[0] = 0.0
+    return splits
+
+
 def analyze_file(mp3_path, mode="silence", interval=10.0,
                  silence_thresh=0.01, silence_min=0.5):
     """Return (cue_data dict, waveform list)."""
@@ -193,6 +335,10 @@ def analyze_file(mp3_path, mode="silence", interval=10.0,
         splits = detect_splits_silence(samples, frame_rate, duration,
                                        silence_thresh=silence_thresh,
                                        min_silence_sec=silence_min)
+    elif mode == "words":
+        splits = detect_splits_words(samples, frame_rate, duration,
+                                     silence_thresh=silence_thresh,
+                                     min_silence_sec=silence_min)
     else:
         splits = detect_splits_fixed(duration, interval_sec=interval)
 
@@ -210,6 +356,15 @@ def analyze_file(mp3_path, mode="silence", interval=10.0,
 # Pyo player
 # ---------------------------------------------------------------------------
 
+def boot_pyo_server(output_id=None):
+    server = pyo.Server(duplex=0)
+    if output_id is not None:
+        server.setOutputDevice(int(output_id))
+    server.boot()
+    server.start()
+    return server
+
+
 def init_pyo():
     if pyo is None:
         with state_lock:
@@ -218,13 +373,52 @@ def init_pyo():
         print("Audio disabled: pyo is not installed.", file=sys.stderr)
         return
 
-    server = pyo.Server(duplex=0).boot()
-    server.start()
+    with state_lock:
+        output_id = state["audio_output_id"]
+
+    server = boot_pyo_server(output_id)
+    devices, default_id, _ = get_audio_output_devices()
+    active_id = output_id if output_id is not None else default_id
+    active_name = next((d["name"] for d in devices if d["id"] == active_id), None)
     with state_lock:
         state["pyo_server"] = server
         state["pyo_ready"] = True
         state["audio_error"] = None
+        state["audio_output_id"] = active_id
+        state["audio_output_name"] = active_name
     print("pyo audio server ready.")
+
+
+def set_audio_output(output_id):
+    if pyo is None:
+        raise RuntimeError("pyo is not installed")
+
+    devices, _, error = get_audio_output_devices()
+    if error:
+        raise RuntimeError(error)
+    output_id = int(output_id)
+    if output_id not in {d["id"] for d in devices}:
+        raise RuntimeError("audio output device not found")
+
+    player_stop_all()
+    with state_lock:
+        old_server = state["pyo_server"]
+        state["pyo_ready"] = False
+        state["pyo_server"] = None
+
+    if old_server:
+        old_server.stop()
+        old_server.shutdown()
+
+    server = boot_pyo_server(output_id)
+    active_name = next((d["name"] for d in devices if d["id"] == output_id), None)
+    with state_lock:
+        state["pyo_server"] = server
+        state["pyo_ready"] = True
+        state["audio_error"] = None
+        state["audio_output_id"] = output_id
+        state["audio_output_name"] = active_name
+    return active_name
 
 
 def semitones_to_ratio(semitones):
@@ -245,27 +439,48 @@ def player_note_on(note, velocity):
         if split_index < 0 or split_index >= len(splits):
             return
 
-        # Stop existing voice on same note
-        _stop_voice(note)
+        _play_split_locked(note, split_index, velocity)
 
-        start_sec = splits[split_index]
-        end_sec = splits[split_index + 1] if split_index + 1 < len(splits) else duration
-        volume = velocity / 127.0
-        pitch_ratio = semitones_to_ratio(state["pitch_bend_semitones"])
-        seg_duration = (end_sec - start_sec) / pitch_ratio
 
-        mp3_path = state["current_file"]
-        player = pyo.SfPlayer(
-            str(mp3_path),
-            speed=pitch_ratio,
-            loop=False,
-            offset=start_sec,
-            interp=2,
-            mul=volume,
-        ).out()
+def player_preview_on(split_index, velocity=110):
+    with state_lock:
+        if not state["pyo_ready"]:
+            raise RuntimeError("audio server is not ready")
+        if state["current_file"] is None or state["cue_data"] is None:
+            raise RuntimeError("no file has been analyzed")
+        splits = state["cue_data"]["splits"]
+        if split_index < 0 or split_index >= len(splits):
+            raise RuntimeError("split index out of range")
 
-        stop_cb = pyo.CallAfter(lambda: _stop_voice_cb(note), seg_duration)
-        state["active_voices"][note] = (player, stop_cb)
+        _play_split_locked("preview", split_index, velocity)
+
+
+def _play_split_locked(voice_key, split_index, velocity):
+    """Must be called with state_lock held."""
+    cue_data = state["cue_data"]
+    splits = cue_data["splits"]
+    duration = cue_data["duration"]
+
+    _stop_voice(voice_key)
+
+    start_sec = splits[split_index]
+    end_sec = splits[split_index + 1] if split_index + 1 < len(splits) else duration
+    volume = velocity / 127.0
+    pitch_ratio = semitones_to_ratio(state["pitch_bend_semitones"])
+    seg_duration = (end_sec - start_sec) / pitch_ratio
+
+    mp3_path = state["current_file"]
+    player = pyo.SfPlayer(
+        str(mp3_path),
+        speed=pitch_ratio,
+        loop=False,
+        offset=start_sec,
+        interp=2,
+        mul=volume,
+    ).out()
+
+    stop_cb = pyo.CallAfter(lambda: _stop_voice_cb(voice_key), seg_duration)
+    state["active_voices"][voice_key] = (player, stop_cb)
 
 
 def _stop_voice(note):
@@ -284,6 +499,11 @@ def _stop_voice_cb(note):
 def player_note_off(note):
     with state_lock:
         _stop_voice(note)
+
+
+def player_preview_off():
+    with state_lock:
+        _stop_voice("preview")
 
 
 def player_pitch_bend(bend_value):
@@ -305,23 +525,28 @@ def player_stop_all():
 # MIDI listener
 # ---------------------------------------------------------------------------
 
-def midi_listener(port_name, stop_event):
+def midi_listener(port_name, stop_event, port):
     if mido is None:
         print("MIDI disabled: mido is not installed.", file=sys.stderr)
         return
 
-    print(f"MIDI: opening port '{port_name}'")
+    print(f"MIDI: listening on port '{port_name}'")
     try:
-        with mido.open_input(port_name) as port:
-            while not stop_event.is_set():
-                for msg in port.iter_pending():
-                    handle_midi_message(msg)
-                time.sleep(0.001)
+        while not stop_event.is_set():
+            for msg in port.iter_pending():
+                handle_midi_message(msg)
+            time.sleep(0.001)
     except Exception as e:
         print(f"MIDI error: {e}", file=sys.stderr)
+    finally:
+        port.close()
 
 
 def handle_midi_message(msg):
+    with state_lock:
+        state["midi_activity_count"] += 1
+        state["midi_activity_time"] = time.time()
+
     if msg.type == "note_on" and msg.velocity > 0:
         player_note_on(msg.note, msg.velocity)
     elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
@@ -335,18 +560,43 @@ def start_midi(port_name):
         raise RuntimeError("mido is not installed")
 
     with state_lock:
-        # Stop existing thread
-        if state["midi_thread"] and state["midi_thread"].is_alive():
-            state["midi_stop"].set()
-            state["midi_thread"].join(timeout=2)
+        old_thread = state["midi_thread"] if state["midi_thread"] and state["midi_thread"].is_alive() else None
+        old_stop = state["midi_stop"]
+    if old_thread:
+        old_stop.set()
+        old_thread.join(timeout=2)
+
+    player_stop_all()
+    with state_lock:
+        old_server = state["pyo_server"]
+        old_pyo_ready = state["pyo_ready"]
+        state["pyo_server"] = None
+        state["pyo_ready"] = False
+
+    if old_server:
+        old_server.stop()
+        old_server.shutdown()
+
+    try:
+        midi_port = mido.open_input(port_name)
+    except Exception as e:
+        with state_lock:
+            state["midi_error"] = str(e)
+        if old_pyo_ready:
+            init_pyo()
+        raise
+
+    with state_lock:
         state["midi_stop"] = threading.Event()
         state["midi_port_name"] = port_name
         state["midi_error"] = None
         t = threading.Thread(target=midi_listener,
-                             args=(port_name, state["midi_stop"]),
+                             args=(port_name, state["midi_stop"], midi_port),
                              daemon=True)
         state["midi_thread"] = t
     t.start()
+    if old_pyo_ready:
+        init_pyo()
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +678,25 @@ class Handler(BaseHTTPRequestHandler):
                 "error": error,
             })
 
+        elif path == "/api/audio_outputs":
+            devices, default_id, error = get_audio_output_devices()
+            with state_lock:
+                current_id = state["audio_output_id"]
+                current_name = state["audio_output_name"]
+                if current_id is None:
+                    current_id = default_id
+                    current_name = next(
+                        (d["name"] for d in devices if d["id"] == current_id),
+                        None
+                    )
+            json_response(self, {
+                "devices": devices,
+                "default": default_id,
+                "current": current_id,
+                "current_name": current_name,
+                "error": error,
+            })
+
         elif path == "/api/state":
             with state_lock:
                 resp = {
@@ -436,10 +705,14 @@ class Handler(BaseHTTPRequestHandler):
                     "waveform": state["waveform"],
                     "midi_port": state["midi_port_name"],
                     "midi_error": state["midi_error"],
+                    "midi_activity_count": state["midi_activity_count"],
+                    "midi_activity_time": state["midi_activity_time"],
                     "base_note": state["base_note"],
                     "active_voices": list(state["active_voices"].keys()),
                     "pyo_ready": state["pyo_ready"],
                     "audio_error": state["audio_error"],
+                    "audio_output_id": state["audio_output_id"],
+                    "audio_output_name": state["audio_output_name"],
                 }
             json_response(self, resp)
 
@@ -487,6 +760,20 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 json_response(self, {"error": str(e)}, 500)
 
+        elif path == "/api/set_audio_output":
+            output_id = params.get("id", [None])[0]
+            if output_id is None:
+                json_response(self, {"error": "missing id"}, 400)
+                return
+            try:
+                name = set_audio_output(int(output_id))
+                json_response(self, {"ok": True, "id": int(output_id), "name": name})
+            except Exception as e:
+                with state_lock:
+                    state["audio_error"] = str(e)
+                    state["pyo_ready"] = False
+                json_response(self, {"error": str(e)}, 500)
+
         elif path == "/api/set_base_note":
             note = params.get("note", [None])[0]
             if note is None:
@@ -498,6 +785,21 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/stop_all":
             player_stop_all()
+            json_response(self, {"ok": True})
+
+        elif path == "/api/preview_on":
+            index = params.get("index", [None])[0]
+            if index is None:
+                json_response(self, {"error": "missing index"}, 400)
+                return
+            try:
+                player_preview_on(int(index))
+                json_response(self, {"ok": True, "index": int(index)})
+            except Exception as e:
+                json_response(self, {"error": str(e)}, 500)
+
+        elif path == "/api/preview_off":
+            player_preview_off()
             json_response(self, {"ok": True})
 
         else:
