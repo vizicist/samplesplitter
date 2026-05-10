@@ -74,7 +74,9 @@ state = {
     "midi_activity_time": None,
     "base_note": 48,
     "pitch_bend_semitones": 0.0,
-    "active_voices": {},       # note -> pyo.SfPlayer
+    "active_voices": {},       # voice key -> (pyo.SfPlayer, pyo.CallAfter)
+    "midi_note_voices": {},    # MIDI note -> queued voice keys
+    "midi_voice_counter": 0,
     "pyo_server": None,
     "pyo_ready": False,
     "audio_error": None,
@@ -435,14 +437,16 @@ def player_note_on(note, velocity):
         base_note = state["base_note"]
         split_index = note - base_note
         splits = cue_data["splits"]
-        duration = cue_data["duration"]
         if split_index < 0 or split_index >= len(splits):
             return
 
-        _play_split_locked(note, split_index, velocity)
+        voice_key = f"midi-{note}-{state['midi_voice_counter']}"
+        state["midi_voice_counter"] += 1
+        _play_split_locked(voice_key, split_index, velocity)
+        state["midi_note_voices"].setdefault(note, []).append(voice_key)
 
 
-def player_preview_on(split_index, velocity=110):
+def player_preview_on(split_index, velocity=110, voice_key="preview"):
     with state_lock:
         if not state["pyo_ready"]:
             raise RuntimeError("audio server is not ready")
@@ -452,7 +456,7 @@ def player_preview_on(split_index, velocity=110):
         if split_index < 0 or split_index >= len(splits):
             raise RuntimeError("split index out of range")
 
-        _play_split_locked("preview", split_index, velocity)
+        _play_split_locked(voice_key, split_index, velocity)
 
 
 def _play_split_locked(voice_key, split_index, velocity):
@@ -488,22 +492,36 @@ def _stop_voice(note):
     if note in state["active_voices"]:
         player, _ = state["active_voices"].pop(note)
         player.stop()
+    _remove_midi_voice_key_locked(note)
+
+
+def _remove_midi_voice_key_locked(voice_key):
+    """Must be called with state_lock held."""
+    for note, voice_keys in list(state["midi_note_voices"].items()):
+        if voice_key in voice_keys:
+            voice_keys.remove(voice_key)
+        if not voice_keys:
+            state["midi_note_voices"].pop(note, None)
 
 
 def _stop_voice_cb(note):
     with state_lock:
         if note in state["active_voices"]:
             state["active_voices"].pop(note)
+        _remove_midi_voice_key_locked(note)
 
 
 def player_note_off(note):
     with state_lock:
-        _stop_voice(note)
+        voice_keys = state["midi_note_voices"].get(note)
+        if not voice_keys:
+            return
+        _stop_voice(voice_keys[0])
 
 
-def player_preview_off():
+def player_preview_off(voice_key="preview"):
     with state_lock:
-        _stop_voice("preview")
+        _stop_voice(voice_key)
 
 
 def player_pitch_bend(bend_value):
@@ -519,6 +537,7 @@ def player_stop_all():
     with state_lock:
         for note in list(state["active_voices"].keys()):
             _stop_voice(note)
+        state["midi_note_voices"].clear()
 
 
 # ---------------------------------------------------------------------------
@@ -789,18 +808,20 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/preview_on":
             index = params.get("index", [None])[0]
+            voice = params.get("voice", ["preview"])[0]
             if index is None:
                 json_response(self, {"error": "missing index"}, 400)
                 return
             try:
-                player_preview_on(int(index))
-                json_response(self, {"ok": True, "index": int(index)})
+                player_preview_on(int(index), voice_key=voice)
+                json_response(self, {"ok": True, "index": int(index), "voice": voice})
             except Exception as e:
                 json_response(self, {"error": str(e)}, 500)
 
         elif path == "/api/preview_off":
-            player_preview_off()
-            json_response(self, {"ok": True})
+            voice = params.get("voice", ["preview"])[0]
+            player_preview_off(voice)
+            json_response(self, {"ok": True, "voice": voice})
 
         else:
             self.send_response(404)

@@ -180,6 +180,7 @@
   }
 
   .mode-btn.active { background: #1a3a5a; border-color: #4af; color: #4af; }
+  .mode-btn.random-active { background: #4a2f12; border-color: #e8a020; color: #ffd28a; }
 
   /* ---- Waveform ---- */
   .waveform-wrap {
@@ -219,6 +220,23 @@
   }
 
   #split-count { color: #4af; font-weight: bold; }
+
+  .random-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .random-controls label {
+    font-size: 9px;
+  }
+
+  .random-controls input {
+    min-width: 54px;
+    width: 54px;
+    padding: 4px 6px;
+  }
 
   .split-buttons {
     flex-shrink: 0;
@@ -346,40 +364,41 @@
         <label>Split Mode</label>
         <div class="mode-row">
           <button class="mode-btn" id="mode-silence" onclick="setMode('silence')">Silence</button>
-          <button class="mode-btn active" id="mode-fixed" onclick="setMode('fixed')">Fixed</button>
-          <button class="mode-btn" id="mode-words" onclick="setMode('words')">Words</button>
+          <button class="mode-btn" id="mode-fixed" onclick="setMode('fixed')">Fixed</button>
+          <button class="mode-btn active" id="mode-words" onclick="setMode('words')">Words</button>
         </div>
       </div>
 
-      <div class="control-group" id="ctrl-interval">
+      <div class="control-group" id="ctrl-interval" style="display:none">
         <label>Interval (sec)</label>
         <input type="number" id="interval" value="1" min="0.5" max="60" step="0.5" style="min-width:80px;width:80px">
       </div>
 
-      <div class="control-group" id="ctrl-thresh" style="display:none">
+      <div class="control-group" id="ctrl-thresh">
         <label>Silence Thresh <span id="thresh-val">0.01</span></label>
         <input type="range" id="silence-thresh" min="0.001" max="0.1" step="0.001" value="0.01"
                oninput="document.getElementById('thresh-val').textContent=parseFloat(this.value).toFixed(3)">
       </div>
 
-      <div class="control-group" id="ctrl-min" style="display:none">
-        <label id="min-label">Min Silence (sec)</label>
-        <input type="number" id="silence-min" value="0.5" min="0.1" max="5" step="0.1" style="min-width:80px;width:80px">
+      <div class="control-group" id="ctrl-min">
+        <label id="min-label">Min Gap (sec)</label>
+        <input type="number" id="silence-min" value="0.1" min="0.1" max="5" step="0.1" style="min-width:80px;width:80px">
       </div>
 
       <button class="primary" onclick="reSplit()" style="align-self:flex-end">⟳ Re-split</button>
     </div>
 
-    <!-- Waveform -->
-    <div class="waveform-wrap" id="waveform-wrap">
-      <canvas id="waveform-canvas"></canvas>
-      <div class="waveform-placeholder" id="waveform-placeholder">Select an MP3 file to begin</div>
-    </div>
-
-    <!-- Split info + status -->
+    <!-- Split controls + status -->
     <div class="split-info">
       <span>Splits: <span id="split-count">—</span></span>
       <span id="split-range" style="color:#8a8a8a"></span>
+      <div class="random-controls">
+        <label for="random-rate">Rate</label>
+        <input type="number" id="random-rate" min="1" max="20" step="1" value="4" title="Random notes per second">
+        <label for="random-length">Length</label>
+        <input type="number" id="random-length" min="0.02" max="10" step="0.01" value="1" title="Seconds from note down to note up">
+        <button class="mode-btn" id="random-play-btn" type="button" onclick="toggleRandomPlayback()" disabled>Random</button>
+      </div>
     </div>
 
     <div class="split-buttons" id="split-buttons"></div>
@@ -392,6 +411,12 @@
       <div class="voice-indicator" id="voice-pips"></div>
     </div>
 
+    <!-- Waveform -->
+    <div class="waveform-wrap" id="waveform-wrap">
+      <canvas id="waveform-canvas"></canvas>
+      <div class="waveform-placeholder" id="waveform-placeholder">Select an MP3 file to begin</div>
+    </div>
+
   </div>
 </div>
 
@@ -402,11 +427,17 @@
 let currentFile = null;
 let cueData = null;
 let waveformData = null;
-let splitMode = 'fixed';
+let splitMode = 'words';
 let pollInterval = null;
 let manualStopTimer = null;
 let manualPlayingIndex = null;
 let manualStartedAt = 0;
+let randomPlayback = false;
+let randomTimer = null;
+let randomVoiceCounter = 0;
+let randomVoiceTimers = new Map();
+let randomVoiceSplits = new Map();
+let activeRandomSplitCounts = new Map();
 let lastMidiActivityCount = null;
 let midiFlashTimer = null;
 const MAX_VOICES = 8;
@@ -456,7 +487,7 @@ async function loadFiles() {
 }
 
 async function selectFile(filename, el) {
-  stopManualPlayback();
+  stopRandomPlayback();
   document.querySelectorAll('.file-item').forEach(e => e.classList.remove('active'));
   el.classList.add('active');
   currentFile = filename;
@@ -650,7 +681,7 @@ async function reSplit() {
 // ---------------------------------------------------------------------------
 async function analyze() {
   if (!currentFile) return;
-  stopManualPlayback();
+  stopRandomPlayback();
 
   const mode = splitMode;
   const interval = document.getElementById('interval').value;
@@ -691,6 +722,7 @@ async function analyze() {
   }
 
   renderSplitButtons();
+  updateRandomButton();
   drawWaveform();
 }
 
@@ -700,7 +732,10 @@ async function analyze() {
 function renderSplitButtons() {
   const wrap = document.getElementById('split-buttons');
   wrap.innerHTML = '';
-  if (!currentFile || !cueData || !cueData.splits) return;
+  if (!currentFile || !cueData || !cueData.splits) {
+    updateRandomButton();
+    return;
+  }
 
   const baseNote = parseInt(document.getElementById('base-note').value) || 48;
   cueData.splits.forEach((start, i) => {
@@ -744,11 +779,13 @@ function renderSplitButtons() {
     });
     wrap.appendChild(btn);
   });
+  updateRandomButton();
 }
 
 function setManualButtonActive(index) {
   document.querySelectorAll('.split-play-btn').forEach(btn => {
-    btn.classList.toggle('active', Number(btn.dataset.splitIndex) === index);
+    const splitIndex = Number(btn.dataset.splitIndex);
+    btn.classList.toggle('active', splitIndex === index || activeRandomSplitCounts.has(splitIndex));
   });
 }
 
@@ -773,6 +810,106 @@ function stopManualPlayback(redraw = true) {
   if (redraw) drawWaveform();
 }
 
+function updateRandomButton() {
+  const btn = document.getElementById('random-play-btn');
+  const hasSplits = Boolean(currentFile && cueData && cueData.splits && cueData.splits.length);
+  btn.disabled = !hasSplits;
+  btn.classList.toggle('random-active', randomPlayback);
+  btn.textContent = randomPlayback ? 'Stop Random' : 'Random';
+}
+
+function toggleRandomPlayback() {
+  if (randomPlayback) {
+    stopRandomPlayback();
+  } else {
+    startRandomPlayback();
+  }
+}
+
+function startRandomPlayback() {
+  if (!currentFile || !cueData || !cueData.splits || cueData.splits.length === 0) return;
+  randomPlayback = true;
+  updateRandomButton();
+  playRandomSplit();
+}
+
+function stopRandomPlayback(redraw = true, stopAudio = true) {
+  randomPlayback = false;
+  if (randomTimer) {
+    clearTimeout(randomTimer);
+    randomTimer = null;
+  }
+  randomVoiceTimers.forEach((timer, voiceKey) => {
+    clearTimeout(timer);
+    if (stopAudio) {
+      fetch(`/api/preview_off?voice=${encodeURIComponent(voiceKey)}`).catch(() => {});
+    }
+  });
+  randomVoiceTimers.clear();
+  randomVoiceSplits.clear();
+  activeRandomSplitCounts.clear();
+  if (stopAudio) {
+    fetch('/api/preview_off').catch(() => {});
+  }
+  updateRandomButton();
+  if (stopAudio) {
+    manualPlayingIndex = null;
+    setManualButtonActive(null);
+    setAudioStatus('idle');
+    if (redraw) drawWaveform();
+  } else if (redraw) {
+    drawWaveform();
+  }
+}
+
+function playRandomSplit() {
+  if (!randomPlayback || !cueData || !cueData.splits || cueData.splits.length === 0) return;
+  randomTimer = setTimeout(playRandomSplit, getRandomIntervalMs());
+
+  let index = Math.floor(Math.random() * cueData.splits.length);
+  if (cueData.splits.length > 1 && (index === manualPlayingIndex || activeRandomSplitCounts.has(index))) {
+    index = (index + 1 + Math.floor(Math.random() * (cueData.splits.length - 1))) % cueData.splits.length;
+  }
+  playSplit(index, { random: true });
+}
+
+function addRandomSplitHighlight(index) {
+  activeRandomSplitCounts.set(index, (activeRandomSplitCounts.get(index) || 0) + 1);
+  setManualButtonActive(manualPlayingIndex);
+  drawWaveform();
+}
+
+function removeRandomVoice(voiceKey) {
+  const timer = randomVoiceTimers.get(voiceKey);
+  if (timer) clearTimeout(timer);
+  randomVoiceTimers.delete(voiceKey);
+
+  const splitIndex = randomVoiceSplits.get(voiceKey);
+  randomVoiceSplits.delete(voiceKey);
+  if (splitIndex !== undefined) {
+    const count = (activeRandomSplitCounts.get(splitIndex) || 1) - 1;
+    if (count > 0) {
+      activeRandomSplitCounts.set(splitIndex, count);
+    } else {
+      activeRandomSplitCounts.delete(splitIndex);
+    }
+  }
+  setManualButtonActive(manualPlayingIndex);
+  drawWaveform();
+}
+
+function getRandomIntervalMs() {
+  const input = document.getElementById('random-rate');
+  const rate = Math.max(1, Math.min(20, parseInt(input.value, 10) || 4));
+  input.value = rate;
+  return 1000 / rate;
+}
+
+function getRandomLengthMs() {
+  const seconds = Math.max(0.02, Math.min(10, parseFloat(document.getElementById('random-length').value) || 1));
+  return seconds * 1000;
+}
+
 function stopManualPlaybackAfterMinimum() {
   const elapsed = performance.now() - manualStartedAt;
   if (manualStartedAt && elapsed < MIN_PREVIEW_MS) {
@@ -783,28 +920,53 @@ function stopManualPlaybackAfterMinimum() {
   }
 }
 
-async function playSplit(index) {
+async function playSplit(index, options = {}) {
   if (!currentFile || !cueData || !cueData.splits) return;
+  if (!options.random && randomPlayback) {
+    stopRandomPlayback(false, true);
+  }
 
   const start = cueData.splits[index];
   const end = index + 1 < cueData.splits.length ? cueData.splits[index + 1] : cueData.duration;
   const duration = Math.max(0, end - start);
 
-  stopManualPlayback(false);
-  manualPlayingIndex = index;
-  manualStartedAt = performance.now();
-  setManualButtonActive(index);
-  setAudioStatus(`preview ${midiNoteName((parseInt(document.getElementById('base-note').value) || 48) + index)}`, true);
-  drawWaveform();
+  let voiceKey = "preview";
+  if (options.random) {
+    voiceKey = `random-${Date.now()}-${randomVoiceCounter++}`;
+  } else {
+    stopManualPlayback(false);
+    manualPlayingIndex = index;
+    manualStartedAt = performance.now();
+    setManualButtonActive(index);
+  }
+  const noteName = midiNoteName((parseInt(document.getElementById('base-note').value) || 48) + index);
+  setAudioStatus(`${options.random ? 'random' : 'preview'} ${noteName}`, true);
+  if (!options.random) drawWaveform();
 
   try {
-    const resp = await fetch(`/api/preview_on?index=${encodeURIComponent(index)}`);
+    const params = new URLSearchParams({ index, voice: voiceKey });
+    const resp = await fetch(`/api/preview_on?${params}`);
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
-    if (manualPlayingIndex !== index) return;
-    manualStopTimer = setTimeout(stopManualPlayback, duration * 1000);
+    if (options.random) {
+      const playMs = getRandomLengthMs();
+      randomVoiceSplits.set(voiceKey, index);
+      addRandomSplitHighlight(index);
+      const noteOffTimer = setTimeout(() => {
+        fetch(`/api/preview_off?voice=${encodeURIComponent(voiceKey)}`).catch(() => {});
+        removeRandomVoice(voiceKey);
+      }, playMs);
+      randomVoiceTimers.set(voiceKey, noteOffTimer);
+    } else {
+      if (manualPlayingIndex !== index) return;
+      manualStopTimer = setTimeout(stopManualPlayback, duration * 1000);
+    }
   } catch (e) {
-    stopManualPlayback();
+    if (options.random) {
+      stopRandomPlayback();
+    } else {
+      stopManualPlayback();
+    }
     alert('Playback failed: ' + e.message);
   }
 }
@@ -861,29 +1023,33 @@ function drawWaveform() {
   }
   ctx.stroke();
 
-  // Draw manual playback highlight over the waveform.
-  if (
-    cueData &&
-    cueData.splits &&
-    cueData.duration > 0 &&
-    manualPlayingIndex !== null &&
-    manualPlayingIndex >= 0 &&
-    manualPlayingIndex < cueData.splits.length
-  ) {
+  // Draw active playback highlights over the waveform.
+  if (cueData && cueData.splits && cueData.duration > 0) {
     const splits = cueData.splits;
     const dur = cueData.duration;
-    const start = splits[manualPlayingIndex];
-    const end = manualPlayingIndex + 1 < splits.length
-      ? splits[manualPlayingIndex + 1]
-      : dur;
-    const x0 = Math.floor((start / dur) * W);
-    const x1 = Math.max(x0 + 2, Math.floor((end / dur) * W));
+    const activeSplits = new Set(activeRandomSplitCounts.keys());
+    if (
+      manualPlayingIndex !== null &&
+      manualPlayingIndex >= 0 &&
+      manualPlayingIndex < splits.length
+    ) {
+      activeSplits.add(manualPlayingIndex);
+    }
 
-    ctx.fillStyle = 'rgba(232, 160, 32, 0.34)';
-    ctx.fillRect(x0, 0, x1 - x0, H);
-    ctx.strokeStyle = '#e8a020';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(x0 + 1, 1, Math.max(0, x1 - x0 - 2), H - 2);
+    activeSplits.forEach((splitIndex) => {
+      const start = splits[splitIndex];
+      const end = splitIndex + 1 < splits.length
+        ? splits[splitIndex + 1]
+        : dur;
+      const x0 = Math.floor((start / dur) * W);
+      const x1 = Math.max(x0 + 2, Math.floor((end / dur) * W));
+
+      ctx.fillStyle = 'rgba(232, 160, 32, 0.34)';
+      ctx.fillRect(x0, 0, x1 - x0, H);
+      ctx.strokeStyle = '#e8a020';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x0 + 1, 1, Math.max(0, x1 - x0 - 2), H - 2);
+    });
   }
 
   // Draw split point lines + note labels
