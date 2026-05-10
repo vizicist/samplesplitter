@@ -27,7 +27,7 @@
     flex-shrink: 0;
   }
 
-  header h1 { font-size: 14px; color: #aaa; letter-spacing: 2px; text-transform: uppercase; }
+  header h1 { font-size: 21px; color: #aaa; letter-spacing: 2px; text-transform: uppercase; }
 
   .main {
     display: flex;
@@ -48,7 +48,7 @@
 
   .sidebar-title {
     padding: 8px 12px;
-    font-size: 11px;
+    font-size: 16.5px;
     color: #8a8a8a;
     text-transform: uppercase;
     letter-spacing: 1px;
@@ -67,7 +67,7 @@
 
   .file-item {
     padding: 7px 12px;
-    font-size: 12px;
+    font-size: 18px;
     cursor: pointer;
     color: #aaa;
     white-space: nowrap;
@@ -111,7 +111,7 @@
   }
 
   label {
-    font-size: 10px;
+    font-size: 15px;
     color: #9a9a9a;
     font-weight: 600;
     text-transform: uppercase;
@@ -128,7 +128,7 @@
     border: 1px solid #333;
     color: #ddd;
     padding: 5px 8px;
-    font-size: 12px;
+    font-size: 18px;
     font-family: inherit;
     border-radius: 3px;
     outline: none;
@@ -143,12 +143,26 @@
     accent-color: #4af;
   }
 
+  .toggle-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+  }
+
+  .toggle-control input {
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    accent-color: #4af;
+  }
+
   button {
     background: #1e1e1e;
     border: 1px solid #444;
     color: #ccc;
     padding: 6px 14px;
-    font-size: 12px;
+    font-size: 18px;
     font-family: inherit;
     border-radius: 3px;
     cursor: pointer;
@@ -160,9 +174,9 @@
   button.primary:hover { background: #1f4a6f; }
 
   .icon-btn {
-    width: 32px;
-    min-width: 32px;
-    height: 28px;
+    width: 40px;
+    min-width: 40px;
+    height: 36px;
     padding: 0;
     text-align: center;
   }
@@ -175,7 +189,7 @@
 
   .mode-btn {
     padding: 4px 10px;
-    font-size: 11px;
+    font-size: 16.5px;
     border-radius: 3px;
   }
 
@@ -191,6 +205,7 @@
     border-radius: 4px;
     overflow: hidden;
     min-height: 120px;
+    cursor: crosshair;
   }
 
   #waveform-canvas {
@@ -205,7 +220,7 @@
     left: 50%;
     transform: translate(-50%, -50%);
     color: #777;
-    font-size: 13px;
+    font-size: 19.5px;
     pointer-events: none;
   }
 
@@ -215,11 +230,9 @@
     display: flex;
     gap: 8px;
     align-items: center;
-    font-size: 12px;
+    font-size: 18px;
     color: #8a8a8a;
   }
-
-  #split-count { color: #4af; font-weight: bold; }
 
   .random-controls {
     display: flex;
@@ -229,52 +242,18 @@
   }
 
   .random-controls label {
-    font-size: 9px;
+    font-size: 13.5px;
   }
 
   .random-controls input {
-    min-width: 54px;
-    width: 54px;
+    min-width: 72px;
+    width: 72px;
     padding: 4px 6px;
-  }
-
-  .split-buttons {
-    flex-shrink: 0;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
-    gap: 6px;
-    max-height: 96px;
-    overflow-y: auto;
-    padding-right: 4px;
-  }
-
-  .split-play-btn {
-    min-width: 0;
-    height: 34px;
-    padding: 4px 8px;
-    text-align: left;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    overflow: hidden;
-  }
-
-  .split-play-btn span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .split-play-btn.active {
-    background: #1a3a5a;
-    border-color: #4af;
-    color: #4af;
   }
 
   .split-time {
     color: #9a9a9a;
-    font-size: 10px;
+    font-size: 15px;
     flex-shrink: 0;
   }
 
@@ -284,7 +263,7 @@
     display: flex;
     gap: 16px;
     align-items: center;
-    font-size: 11px;
+    font-size: 16.5px;
     color: #8a8a8a;
     padding-top: 4px;
     border-top: 1px solid #1e1e1e;
@@ -302,8 +281,8 @@
   #status-midi { color: #888; }
   #status-file { color: #888; }
 
-  #midi-port-select { width: 170px; min-width: 0; }
-  #audio-output-select { width: 240px; min-width: 0; }
+  #midi-port-select { width: 240px; min-width: 0; }
+  #audio-output-select { width: 340px; min-width: 0; }
 
   .voice-indicator {
     display: flex;
@@ -375,8 +354,8 @@
       </div>
 
       <div class="control-group" id="ctrl-thresh">
-        <label>Silence Thresh <span id="thresh-val">0.01</span></label>
-        <input type="range" id="silence-thresh" min="0.001" max="0.1" step="0.001" value="0.01"
+        <label>Silence Thresh <span id="thresh-val">0.100</span></label>
+        <input type="range" id="silence-thresh" min="0.001" max="0.3" step="0.001" value="0.1"
                oninput="document.getElementById('thresh-val').textContent=parseFloat(this.value).toFixed(3)">
       </div>
 
@@ -385,23 +364,26 @@
         <input type="number" id="silence-min" value="0.1" min="0.1" max="5" step="0.1" style="min-width:80px;width:80px">
       </div>
 
+      <div class="control-group" id="ctrl-peak-start">
+        <label>Peak Start</label>
+        <div class="toggle-control">
+          <input type="checkbox" id="peak-start" onchange="setPeakStart(this.checked)" checked>
+        </div>
+      </div>
+
       <button class="primary" onclick="reSplit()" style="align-self:flex-end">⟳ Re-split</button>
     </div>
 
     <!-- Split controls + status -->
     <div class="split-info">
-      <span>Splits: <span id="split-count">—</span></span>
-      <span id="split-range" style="color:#8a8a8a"></span>
       <div class="random-controls">
         <label for="random-rate">Rate</label>
         <input type="number" id="random-rate" min="1" max="20" step="1" value="4" title="Random notes per second">
         <label for="random-length">Length</label>
-        <input type="number" id="random-length" min="0.02" max="10" step="0.01" value="1" title="Seconds from note down to note up">
+        <input type="number" id="random-length" min="0.02" max="10" step="0.01" value="0.5" title="Seconds from note down to note up">
         <button class="mode-btn" id="random-play-btn" type="button" onclick="toggleRandomPlayback()" disabled>Random</button>
       </div>
     </div>
-
-    <div class="split-buttons" id="split-buttons"></div>
 
     <div class="status-bar">
       <span><span class="dot" id="dot-midi"></span> MIDI: <span id="status-midi">not connected</span></span>
@@ -452,6 +434,8 @@ window.addEventListener('load', () => {
   loadMidiPorts();
   loadAudioOutputs();
   buildVoicePips();
+  setPeakStart(document.getElementById('peak-start').checked);
+  setupWaveformPlayback();
   startPolling();
   resizeCanvas();
   window.addEventListener('resize', () => { resizeCanvas(); drawWaveform(); });
@@ -646,7 +630,11 @@ async function setBaseNote(val) {
   const note = Math.max(0, Math.min(127, parseInt(val) || 0));
   document.getElementById('base-note').value = note;
   await fetch(`/api/set_base_note?note=${encodeURIComponent(note)}`);
-  renderSplitButtons();
+  drawWaveform();
+}
+
+async function setPeakStart(enabled) {
+  await fetch(`/api/set_peak_start?enabled=${enabled ? 1 : 0}`);
   drawWaveform();
 }
 
@@ -662,6 +650,7 @@ function setMode(mode) {
   document.getElementById('ctrl-interval').style.display = mode === 'fixed' ? '' : 'none';
   document.getElementById('ctrl-thresh').style.display = mode === 'fixed' ? 'none' : '';
   document.getElementById('ctrl-min').style.display = mode === 'fixed' ? 'none' : '';
+  document.getElementById('ctrl-peak-start').style.display = mode === 'words' ? '' : 'none';
   document.getElementById('min-label').textContent =
     mode === 'words' ? 'Min Gap (sec)' : 'Min Silence (sec)';
   if (mode === 'words' && parseFloat(minInput.value) >= 0.5) {
@@ -688,7 +677,6 @@ async function analyze() {
   const thresh = document.getElementById('silence-thresh').value;
   const silenceMin = document.getElementById('silence-min').value;
 
-  document.getElementById('split-count').textContent = '…';
   document.getElementById('waveform-placeholder').style.display = 'none';
 
   const params = new URLSearchParams({
@@ -710,18 +698,6 @@ async function analyze() {
   cueData = data.cue_data;
   waveformData = data.waveform;
 
-  document.getElementById('split-count').textContent = cueData.num_splits;
-
-  const splits = cueData.splits;
-  if (splits.length > 1) {
-    const avg = (cueData.duration / splits.length).toFixed(1);
-    document.getElementById('split-range').textContent =
-      `avg ${avg}s each · ${cueData.duration.toFixed(1)}s total`;
-  } else {
-    document.getElementById('split-range').textContent = '';
-  }
-
-  renderSplitButtons();
   updateRandomButton();
   drawWaveform();
 }
@@ -729,64 +705,47 @@ async function analyze() {
 // ---------------------------------------------------------------------------
 // Manual browser playback
 // ---------------------------------------------------------------------------
-function renderSplitButtons() {
-  const wrap = document.getElementById('split-buttons');
-  wrap.innerHTML = '';
-  if (!currentFile || !cueData || !cueData.splits) {
-    updateRandomButton();
-    return;
-  }
-
-  const baseNote = parseInt(document.getElementById('base-note').value) || 48;
-  cueData.splits.forEach((start, i) => {
-    const end = i + 1 < cueData.splits.length ? cueData.splits[i + 1] : cueData.duration;
-    const btn = document.createElement('button');
-    btn.className = 'split-play-btn';
-    btn.type = 'button';
-    btn.dataset.splitIndex = i;
-    btn.title = `${midiNoteName(baseNote + i)} · ${start.toFixed(2)}s to ${end.toFixed(2)}s`;
-    btn.innerHTML = `<span>▶ ${midiNoteName(baseNote + i)}</span><span class="split-time">${start.toFixed(1)}s</span>`;
-    btn.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      btn.setPointerCapture(e.pointerId);
-      playSplit(i);
-    });
-    btn.addEventListener('pointerup', (e) => {
-      e.preventDefault();
-      if (btn.hasPointerCapture(e.pointerId)) {
-        btn.releasePointerCapture(e.pointerId);
-      }
-      stopManualPlaybackAfterMinimum();
-    });
-    btn.addEventListener('pointercancel', () => stopManualPlayback());
-    btn.addEventListener('lostpointercapture', () => {
-      if (manualPlayingIndex === i) stopManualPlayback();
-    });
-    btn.addEventListener('keydown', (e) => {
-      if ((e.key === ' ' || e.key === 'Enter') && manualPlayingIndex !== i) {
-        e.preventDefault();
-        playSplit(i);
-      }
-    });
-    btn.addEventListener('keyup', (e) => {
-      if (e.key === ' ' || e.key === 'Enter') {
-        e.preventDefault();
-        stopManualPlaybackAfterMinimum();
-      }
-    });
-    btn.addEventListener('blur', () => {
-      if (manualPlayingIndex === i) stopManualPlayback();
-    });
-    wrap.appendChild(btn);
-  });
-  updateRandomButton();
+function setManualButtonActive(index) {
+  drawWaveform();
 }
 
-function setManualButtonActive(index) {
-  document.querySelectorAll('.split-play-btn').forEach(btn => {
-    const splitIndex = Number(btn.dataset.splitIndex);
-    btn.classList.toggle('active', splitIndex === index || activeRandomSplitCounts.has(splitIndex));
+function setupWaveformPlayback() {
+  const wrap = document.getElementById('waveform-wrap');
+  wrap.addEventListener('pointerdown', (e) => {
+    const splitIndex = getSplitIndexFromWaveformEvent(e);
+    if (splitIndex === null) return;
+    e.preventDefault();
+    wrap.setPointerCapture(e.pointerId);
+    playSplit(splitIndex);
   });
+  wrap.addEventListener('pointerup', (e) => {
+    if (wrap.hasPointerCapture(e.pointerId)) {
+      wrap.releasePointerCapture(e.pointerId);
+    }
+    stopManualPlaybackAfterMinimum();
+  });
+  wrap.addEventListener('pointercancel', () => stopManualPlayback());
+  wrap.addEventListener('lostpointercapture', () => {
+    if (manualPlayingIndex !== null) stopManualPlayback();
+  });
+}
+
+function getSplitIndexFromWaveformEvent(e) {
+  if (!cueData || !cueData.splits || cueData.splits.length === 0 || cueData.duration <= 0) {
+    return null;
+  }
+  const rect = document.getElementById('waveform-wrap').getBoundingClientRect();
+  const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+  const time = (x / rect.width) * cueData.duration;
+  let splitIndex = 0;
+  for (let i = 0; i < cueData.splits.length; i++) {
+    if (cueData.splits[i] <= time) {
+      splitIndex = i;
+    } else {
+      break;
+    }
+  }
+  return splitIndex;
 }
 
 function setAudioStatus(text, active = false, title = '') {
@@ -906,7 +865,7 @@ function getRandomIntervalMs() {
 }
 
 function getRandomLengthMs() {
-  const seconds = Math.max(0.02, Math.min(10, parseFloat(document.getElementById('random-length').value) || 1));
+  const seconds = Math.max(0.02, Math.min(10, parseFloat(document.getElementById('random-length').value) || 0.5));
   return seconds * 1000;
 }
 
@@ -1065,7 +1024,7 @@ function drawWaveform() {
       ctx.beginPath();
       ctx.strokeStyle = i === 0 ? 'rgba(255,255,255,0.15)' : '#e8a020';
       ctx.lineWidth = i === 0 ? 1 : 1.5;
-      ctx.setLineDash(i === 0 ? [] : [4, 4]);
+      ctx.setLineDash([]);
       ctx.moveTo(x, 0);
       ctx.lineTo(x, H);
       ctx.stroke();
@@ -1075,12 +1034,45 @@ function drawWaveform() {
       if (i < 128) {
         const noteName = midiNoteName(baseNote + i);
         ctx.fillStyle = '#e8a020';
-        ctx.font = '10px SF Mono, Consolas, monospace';
-        ctx.fillText(noteName, x + 3, 13);
+        ctx.font = '15px SF Mono, Consolas, monospace';
+        ctx.fillText(noteName, x + 3, 18);
         ctx.fillStyle = '#555';
-        ctx.fillText(`${t.toFixed(2)}s`, x + 3, 25);
+        ctx.fillText(`${t.toFixed(2)}s`, x + 3, 36);
       }
     });
+
+    if (
+      document.getElementById('peak-start')?.checked &&
+      cueData.peak_starts &&
+      cueData.peak_starts.length === splits.length
+    ) {
+      cueData.peak_starts.forEach((t, i) => {
+        if (t <= splits[i] + 0.0001) return;
+        const x = Math.floor((t / dur) * W);
+        const y = Math.max(48, Math.min(H - 8, 48 + (i % 4) * 18));
+
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(244, 240, 106, 0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([2, 5]);
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(244, 240, 106, 0.65)';
+        ctx.moveTo(x, 4);
+        ctx.lineTo(x - 5, 13);
+        ctx.lineTo(x + 5, 13);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(244, 240, 106, 0.75)';
+        ctx.font = '15px SF Mono, Consolas, monospace';
+        ctx.fillText('peak', x + 4, y);
+      });
+    }
   }
 }
 
@@ -1113,6 +1105,13 @@ function startPolling() {
     if (data.midi_activity_count !== undefined && data.midi_activity_count !== lastMidiActivityCount) {
       if (lastMidiActivityCount !== null) flashMidiInputLabel();
       lastMidiActivityCount = data.midi_activity_count;
+    }
+
+    if (data.peak_start_enabled !== undefined) {
+      const peakStart = document.getElementById('peak-start');
+      if (peakStart && peakStart.checked !== data.peak_start_enabled) {
+        peakStart.checked = data.peak_start_enabled;
+      }
     }
 
     // Audio status

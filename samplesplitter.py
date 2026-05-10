@@ -73,6 +73,7 @@ state = {
     "midi_activity_count": 0,
     "midi_activity_time": None,
     "base_note": 48,
+    "peak_start_enabled": True,
     "pitch_bend_semitones": 0.0,
     "active_voices": {},       # voice key -> (pyo.SfPlayer, pyo.CallAfter)
     "midi_note_voices": {},    # MIDI note -> queued voice keys
@@ -185,6 +186,22 @@ def compute_waveform(samples, num_points=WAVEFORM_POINTS):
             out.append(rms)
     peak = max(out) or 1.0
     return [v / peak for v in out]
+
+
+def compute_peak_starts(samples, frame_rate, splits, duration):
+    peak_starts = []
+    total_samples = len(samples)
+    for i, start in enumerate(splits):
+        end = splits[i + 1] if i + 1 < len(splits) else duration
+        start_idx = max(0, min(total_samples, int(start * frame_rate)))
+        end_idx = max(start_idx + 1, min(total_samples, int(end * frame_rate)))
+        chunk = samples[start_idx:end_idx]
+        if not chunk:
+            peak_starts.append(round(start, 4))
+            continue
+        peak_offset = max(range(len(chunk)), key=lambda idx: abs(chunk[idx]))
+        peak_starts.append(round((start_idx + peak_offset) / frame_rate, 4))
+    return peak_starts
 
 
 def detect_splits_silence(samples, frame_rate, duration,
@@ -349,6 +366,7 @@ def analyze_file(mp3_path, mode="silence", interval=10.0,
         "duration": round(duration, 4),
         "mode": mode,
         "splits": splits,
+        "peak_starts": compute_peak_starts(samples, frame_rate, splits, duration),
         "num_splits": len(splits),
     }
     return cue_data, waveform
@@ -469,6 +487,10 @@ def _play_split_locked(voice_key, split_index, velocity):
 
     start_sec = splits[split_index]
     end_sec = splits[split_index + 1] if split_index + 1 < len(splits) else duration
+    if state["peak_start_enabled"] and cue_data.get("mode") == "words":
+        peak_starts = cue_data.get("peak_starts") or []
+        if split_index < len(peak_starts):
+            start_sec = min(max(start_sec, peak_starts[split_index]), end_sec)
     volume = velocity / 127.0
     pitch_ratio = semitones_to_ratio(state["pitch_bend_semitones"])
     seg_duration = (end_sec - start_sec) / pitch_ratio
@@ -727,6 +749,7 @@ class Handler(BaseHTTPRequestHandler):
                     "midi_activity_count": state["midi_activity_count"],
                     "midi_activity_time": state["midi_activity_time"],
                     "base_note": state["base_note"],
+                    "peak_start_enabled": state["peak_start_enabled"],
                     "active_voices": list(state["active_voices"].keys()),
                     "pyo_ready": state["pyo_ready"],
                     "audio_error": state["audio_error"],
@@ -801,6 +824,12 @@ class Handler(BaseHTTPRequestHandler):
             with state_lock:
                 state["base_note"] = int(note)
             json_response(self, {"ok": True, "base_note": int(note)})
+
+        elif path == "/api/set_peak_start":
+            enabled = params.get("enabled", ["0"])[0] in ("1", "true", "yes", "on")
+            with state_lock:
+                state["peak_start_enabled"] = enabled
+            json_response(self, {"ok": True, "peak_start_enabled": enabled})
 
         elif path == "/api/stop_all":
             player_stop_all()
