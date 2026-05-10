@@ -5,3 +5,4 @@ __pycache__/
 *.wav
 *.aiff
 .DS_Store
+ffmpeg/

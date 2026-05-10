@@ -28,6 +28,31 @@ import mido
 import pyo
 
 # ---------------------------------------------------------------------------
+# ffmpeg path resolution
+# ---------------------------------------------------------------------------
+
+def find_ffmpeg():
+    """Find ffmpeg binary: check script-relative ffmpeg/bin/ first, then PATH."""
+    script_dir = Path(__file__).parent.resolve()
+    candidates = [
+        script_dir / "ffmpeg" / "bin" / "ffmpeg",
+        script_dir / "ffmpeg" / "bin" / "ffmpeg.exe",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    # Fall back to PATH
+    import shutil
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    print("Error: ffmpeg not found. Put ffmpeg/bin/ffmpeg next to this script, or add ffmpeg to PATH.",
+          file=sys.stderr)
+    sys.exit(1)
+
+FFMPEG = find_ffmpeg()
+
+# ---------------------------------------------------------------------------
 # Global state (shared between HTTP handler and player thread)
 # ---------------------------------------------------------------------------
 
@@ -59,7 +84,7 @@ WAVEFORM_POINTS = 1200        # number of amplitude points sent to browser
 
 def mp3_to_wav(mp3_path, wav_path):
     result = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(mp3_path), "-ar", "44100", "-ac", "1", str(wav_path)],
+        [FFMPEG, "-y", "-i", str(mp3_path), "-ar", "44100", "-ac", "1", str(wav_path)],
         capture_output=True
     )
     if result.returncode != 0:
