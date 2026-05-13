@@ -498,23 +498,36 @@ async function loadMidiPorts() {
   sel.innerHTML = '<option value="">Scanning…</option>';
 
   let data;
+  let state = {};
   try {
-    const resp = await fetch('/api/midi_ports');
-    data = await resp.json();
+    const [portsResp, stateResp] = await Promise.all([
+      fetch('/api/midi_ports'),
+      fetch('/api/state')
+    ]);
+    data = await portsResp.json();
+    state = await stateResp.json();
   } catch (e) {
     sel.innerHTML = '<option value="">— unavailable —</option>';
     updateMidiStatus(null, e.message);
     return;
   }
 
+  const current = data.current || state.midi_port || '';
   sel.innerHTML = '<option value="">— select input —</option>';
   data.ports.forEach(p => {
     const opt = document.createElement('option');
     opt.value = p;
     opt.textContent = p;
-    if (p === data.current) opt.selected = true;
+    if (p === current) opt.selected = true;
     sel.appendChild(opt);
   });
+  if (current && !data.ports.includes(current)) {
+    const opt = document.createElement('option');
+    opt.value = current;
+    opt.textContent = current;
+    opt.selected = true;
+    sel.appendChild(opt);
+  }
   if (data.ports.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
@@ -522,8 +535,9 @@ async function loadMidiPorts() {
     opt.disabled = true;
     sel.appendChild(opt);
   }
+  if (current) sel.value = current;
   sel.disabled = Boolean(data.error);
-  updateMidiStatus(data.current, data.error);
+  updateMidiStatus(current, data.error || state.midi_error);
 }
 
 function buildBaseNoteOptions() {

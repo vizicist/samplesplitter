@@ -4,6 +4,21 @@ setlocal EnableExtensions
 set "PY_VERSION=3.11"
 set "PY_CMD=py -%PY_VERSION%"
 set "MODULES=pyo mido python-rtmidi"
+set "PAUSE_ON_EXIT=1"
+set "WINGET_EXTRA_FLAGS="
+
+:parse_args
+if "%~1" == "" goto args_done
+if /i "%~1" == "--quiet" set "PAUSE_ON_EXIT=0"
+if /i "%~1" == "--no-pause" set "PAUSE_ON_EXIT=0"
+if /i "%~1" == "/quiet" set "PAUSE_ON_EXIT=0"
+if /i "%~1" == "/silent" set "PAUSE_ON_EXIT=0"
+if /i "%~1" == "/verysilent" set "PAUSE_ON_EXIT=0"
+shift
+goto parse_args
+
+:args_done
+if "%PAUSE_ON_EXIT%" == "0" set "WINGET_EXTRA_FLAGS=--silent"
 
 echo Sample Splitter Windows installer
 echo.
@@ -52,7 +67,7 @@ if errorlevel 1 goto :fail
 
 echo.
 echo Done. You can now run runit.bat.
-pause
+if "%PAUSE_ON_EXIT%" == "1" pause
 exit /b 0
 
 :install_python
@@ -66,12 +81,12 @@ if errorlevel 1 (
 )
 
 echo Installing Python %PY_VERSION% with winget...
-winget install --id Python.Python.%PY_VERSION% -e --source winget --accept-package-agreements --accept-source-agreements
+winget install --id Python.Python.%PY_VERSION% -e --source winget --accept-package-agreements --accept-source-agreements %WINGET_EXTRA_FLAGS%
 if errorlevel 1 goto :fail
 exit /b 0
 
 :fail
 echo.
 echo Install failed with code %ERRORLEVEL%.
-pause
+if "%PAUSE_ON_EXIT%" == "1" pause
 exit /b 1

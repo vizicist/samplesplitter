@@ -107,6 +107,20 @@ def get_midi_input_names():
         return [], f"MIDI backend unavailable: {e}"
 
 
+def resolve_midi_input_name(port_name):
+    ports, error = get_midi_input_names()
+    if error:
+        raise RuntimeError(error)
+    if port_name in ports:
+        return port_name
+    matches = [name for name in ports if name.startswith(port_name)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise RuntimeError(f"ambiguous port '{port_name}': {', '.join(matches)}")
+    raise RuntimeError(f"unknown port '{port_name}'")
+
+
 def get_audio_output_devices():
     if pyo is None:
         return [], None, "pyo is not installed"
@@ -647,7 +661,8 @@ def start_midi(port_name):
         old_server.shutdown()
 
     try:
-        midi_port = mido.open_input(port_name)
+        resolved_port_name = resolve_midi_input_name(port_name)
+        midi_port = mido.open_input(resolved_port_name)
     except Exception as e:
         with state_lock:
             state["midi_error"] = str(e)
@@ -657,10 +672,10 @@ def start_midi(port_name):
 
     with state_lock:
         state["midi_stop"] = threading.Event()
-        state["midi_port_name"] = port_name
+        state["midi_port_name"] = resolved_port_name
         state["midi_error"] = None
         t = threading.Thread(target=midi_listener,
-                             args=(port_name, state["midi_stop"], midi_port),
+                             args=(resolved_port_name, state["midi_stop"], midi_port),
                              daemon=True)
         state["midi_thread"] = t
     t.start()
@@ -704,6 +719,34 @@ def resolve_mp3_file(filename):
     if mp3_path.parent != mp3_dir or mp3_path.suffix.lower() != ".mp3":
         return None
     return mp3_path if mp3_path.exists() else None
+
+
+def load_and_analyze_file(mp3_path, mode="fixed", interval=1.0,
+                          silence_thresh=0.01, silence_min=0.5):
+    player_stop_all()
+    cue_data, waveform = analyze_file(
+        mp3_path, mode=mode, interval=interval,
+        silence_thresh=silence_thresh, silence_min=silence_min
+    )
+    with state_lock:
+        state["current_file"] = mp3_path
+        state["cue_data"] = cue_data
+        state["waveform"] = waveform
+    return cue_data, waveform
+
+
+def load_first_mp3_with_defaults():
+    mp3_dir = Path(state["mp3_dir"])
+    files = sorted(p for p in mp3_dir.iterdir() if p.suffix.lower() == ".mp3")
+    if not files:
+        print(f"No MP3 files found in {mp3_dir}", file=sys.stderr)
+        return
+    mp3_path = files[0].resolve()
+    try:
+        load_and_analyze_file(mp3_path)
+        print(f"Loaded MP3: {mp3_path.name}")
+    except Exception as e:
+        print(f"Failed to load MP3 '{mp3_path.name}': {e}", file=sys.stderr)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -803,15 +846,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             try:
-                player_stop_all()
-                cue_data, waveform = analyze_file(
+                cue_data, waveform = load_and_analyze_file(
                     mp3_path, mode=mode, interval=interval,
                     silence_thresh=silence_thresh, silence_min=silence_min
                 )
-                with state_lock:
-                    state["current_file"] = mp3_path
-                    state["cue_data"] = cue_data
-                    state["waveform"] = waveform
                 json_response(self, {"cue_data": cue_data, "waveform": waveform})
             except Exception as e:
                 json_response(self, {"error": str(e)}, 500)
@@ -826,7 +864,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 start_midi(port)
-                json_response(self, {"ok": True, "port": port})
+                with state_lock:
+                    current = state["midi_port_name"]
+                json_response(self, {"ok": True, "port": current})
             except Exception as e:
                 json_response(self, {"error": str(e)}, 500)
 
@@ -907,6 +947,7 @@ def main():
     parser.add_argument("--dir", default="mp3s", help="Directory containing MP3 files (default: mp3s)")
     parser.add_argument("--port", type=int, default=9876, help="HTTP port (default: 9876)")
     parser.add_argument("--base-note", type=int, default=48, help="MIDI base note (default: 48 = C3)")
+    parser.add_argument("--midi-port", nargs="+", default=None, help="MIDI input port to listen to on startup")
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically")
     args = parser.parse_args()
 
@@ -917,6 +958,8 @@ def main():
 
     state["mp3_dir"] = mp3_dir
     state["base_note"] = args.base_note
+
+    load_first_mp3_with_defaults()
 
     # Start pyo in background thread
     pyo_thread = threading.Thread(target=init_pyo, daemon=True)
@@ -929,6 +972,13 @@ def main():
 
     print(f"Sample Splitter running at http://localhost:{args.port}")
     print(f"MP3 directory: {mp3_dir}")
+    midi_port = " ".join(args.midi_port) if args.midi_port else None
+    if midi_port:
+        try:
+            start_midi(midi_port)
+            print(f"MIDI input: {midi_port}")
+        except Exception as e:
+            print(f"MIDI input failed: {e}", file=sys.stderr)
     print("Press Ctrl+C to quit.\n")
 
     server = HTTPServer(("localhost", args.port), Handler)
