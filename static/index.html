@@ -25,6 +25,7 @@
     align-items: center;
     gap: 12px;
     flex-shrink: 0;
+    flex-wrap: wrap;
   }
 
   header h1 { font-size: 21px; color: #aaa; letter-spacing: 2px; text-transform: uppercase; }
@@ -141,6 +142,11 @@
     padding: 0;
     min-width: 100px;
     accent-color: #4af;
+  }
+
+  #pitch-bend {
+    width: 150px;
+    min-width: 150px;
   }
 
   .toggle-control {
@@ -303,7 +309,6 @@
 
 <header>
   <h1>Sample Splitter</h1>
-  <div style="flex:1"></div>
   <div class="control-group">
     <label id="midi-input-label">MIDI Input</label>
     <div class="control-inline">
@@ -325,6 +330,11 @@
   <div class="control-group">
     <label>Base Note</label>
     <select id="base-note" onchange="setBaseNote(this.value)" style="width:86px;min-width:86px"></select>
+  </div>
+  <div class="control-group">
+    <label>Pitch Bend <span id="pitch-bend-val">0.0</span></label>
+    <input type="range" id="pitch-bend" min="-12" max="12" step="0.1" value="0"
+           oninput="setPitchBend(this.value)">
   </div>
 </header>
 
@@ -362,6 +372,11 @@
       <div class="control-group" id="ctrl-min">
         <label id="min-label">Min Gap (sec)</label>
         <input type="number" id="silence-min" value="0.1" min="0.1" max="5" step="0.1" style="min-width:80px;width:80px">
+      </div>
+
+      <div class="control-group" id="ctrl-words-per-split">
+        <label>Words / Split</label>
+        <input type="number" id="words-per-split" value="2" min="1" max="16" step="1" style="min-width:80px;width:80px">
       </div>
 
       <div class="control-group" id="ctrl-peak-start">
@@ -656,6 +671,13 @@ async function setBaseNote(val) {
   drawWaveform();
 }
 
+async function setPitchBend(val) {
+  const semitones = Math.max(-12, Math.min(12, parseFloat(val) || 0));
+  document.getElementById('pitch-bend').value = semitones;
+  document.getElementById('pitch-bend-val').textContent = semitones.toFixed(1);
+  await fetch(`/api/set_pitch_bend?semitones=${encodeURIComponent(semitones)}`);
+}
+
 async function setPeakStart(enabled) {
   await fetch(`/api/set_peak_start?enabled=${enabled ? 1 : 0}`);
   drawWaveform();
@@ -673,6 +695,7 @@ function setMode(mode) {
   document.getElementById('ctrl-interval').style.display = mode === 'fixed' ? '' : 'none';
   document.getElementById('ctrl-thresh').style.display = mode === 'fixed' ? 'none' : '';
   document.getElementById('ctrl-min').style.display = mode === 'fixed' ? 'none' : '';
+  document.getElementById('ctrl-words-per-split').style.display = mode === 'words' ? '' : 'none';
   document.getElementById('ctrl-peak-start').style.display = mode === 'words' ? '' : 'none';
   document.getElementById('min-label').textContent =
     mode === 'words' ? 'Min Gap (sec)' : 'Min Silence (sec)';
@@ -699,6 +722,7 @@ async function analyze() {
   const interval = document.getElementById('interval').value;
   const thresh = document.getElementById('silence-thresh').value;
   const silenceMin = document.getElementById('silence-min').value;
+  const wordsPerSplit = document.getElementById('words-per-split').value;
 
   document.getElementById('waveform-placeholder').style.display = 'none';
 
@@ -708,6 +732,7 @@ async function analyze() {
     interval,
     silence_thresh: thresh,
     silence_min: silenceMin,
+    words_per_split: wordsPerSplit,
   });
 
   const resp = await fetch(`/api/analyze?${params}`);
@@ -904,12 +929,22 @@ function stopManualPlaybackAfterMinimum() {
 
 async function playSplit(index, options = {}) {
   if (!currentFile || !cueData || !cueData.splits) return;
+  const splitIndex = Number(index);
+  if (!Number.isInteger(splitIndex) || splitIndex < 0 || splitIndex >= cueData.splits.length) {
+    if (options.random) {
+      stopRandomPlayback();
+    } else {
+      stopManualPlayback();
+    }
+    alert(`Playback failed: split index ${index} is out of range for ${cueData.splits.length} splits`);
+    return;
+  }
   if (!options.random && randomPlayback) {
     stopRandomPlayback(false, true);
   }
 
-  const start = cueData.splits[index];
-  const end = index + 1 < cueData.splits.length ? cueData.splits[index + 1] : cueData.duration;
+  const start = cueData.splits[splitIndex];
+  const end = splitIndex + 1 < cueData.splits.length ? cueData.splits[splitIndex + 1] : cueData.duration;
   const duration = Math.max(0, end - start);
 
   let voiceKey = "preview";
@@ -917,30 +952,30 @@ async function playSplit(index, options = {}) {
     voiceKey = `random-${Date.now()}-${randomVoiceCounter++}`;
   } else {
     stopManualPlayback(false);
-    manualPlayingIndex = index;
+    manualPlayingIndex = splitIndex;
     manualStartedAt = performance.now();
-    setManualButtonActive(index);
+    setManualButtonActive(splitIndex);
   }
-  const noteName = midiNoteName((parseInt(document.getElementById('base-note').value) || 48) + index);
+  const noteName = midiNoteName((parseInt(document.getElementById('base-note').value) || 48) + splitIndex);
   setAudioStatus(`${options.random ? 'random' : 'preview'} ${noteName}`, true);
   if (!options.random) drawWaveform();
 
   try {
-    const params = new URLSearchParams({ index, voice: voiceKey });
+    const params = new URLSearchParams({ file: currentFile, index: splitIndex, voice: voiceKey });
     const resp = await fetch(`/api/preview_on?${params}`);
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
     if (options.random) {
       const playMs = getRandomLengthMs();
-      randomVoiceSplits.set(voiceKey, index);
-      addRandomSplitHighlight(index);
+      randomVoiceSplits.set(voiceKey, splitIndex);
+      addRandomSplitHighlight(splitIndex);
       const noteOffTimer = setTimeout(() => {
         fetch(`/api/preview_off?voice=${encodeURIComponent(voiceKey)}`).catch(() => {});
         removeRandomVoice(voiceKey);
       }, playMs);
       randomVoiceTimers.set(voiceKey, noteOffTimer);
     } else {
-      if (manualPlayingIndex !== index) return;
+      if (manualPlayingIndex !== splitIndex) return;
       manualStopTimer = setTimeout(stopManualPlayback, duration * 1000);
     }
   } catch (e) {
@@ -1134,6 +1169,18 @@ function startPolling() {
       const peakStart = document.getElementById('peak-start');
       if (peakStart && peakStart.checked !== data.peak_start_enabled) {
         peakStart.checked = data.peak_start_enabled;
+      }
+    }
+
+    if (data.pitch_bend_semitones !== undefined) {
+      const pitchBend = document.getElementById('pitch-bend');
+      const pitchBendVal = document.getElementById('pitch-bend-val');
+      const bend = Number(data.pitch_bend_semitones) || 0;
+      if (pitchBend && document.activeElement !== pitchBend) {
+        pitchBend.value = bend;
+      }
+      if (pitchBendVal) {
+        pitchBendVal.textContent = bend.toFixed(1);
       }
     }
 

@@ -1,0 +1,6 @@
+github.com/gen2brain/malgo v0.11.25 h1:g0eMVeZIBvMRBbkVSR8p7ZafGFbxBcQERPa1GKHkg34=
+github.com/gen2brain/malgo v0.11.25/go.mod h1:xLVG3ROA33Bzol1quF3e4ehqcFuqh8QK4B8T6LQUs/M=
+gitlab.com/gomidi/midi v1.21.0 h1:eyoUlx7/PTRUcmWWWD3OKxUYuRWbcDa2rCvRYY7Y4yc=
+gitlab.com/gomidi/midi v1.21.0/go.mod h1:3ohtNOhqoSakkuLG/Li1OI6I3J1c2LErnJF5o/VBq1c=
+gitlab.com/gomidi/rtmididrv v0.15.0 h1:52Heco8Y3Jjcl4t0yDUVikOxfI8FMF1Zq+qsG++TUeo=
+gitlab.com/gomidi/rtmididrv v0.15.0/go.mod h1:p/6IL1LGgj7utcv3wXudsDWiD9spgAdn0O8LDsGIPG0=

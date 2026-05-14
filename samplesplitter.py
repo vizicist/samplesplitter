@@ -13,6 +13,7 @@ import argparse
 import json
 import math
 import os
+import random
 import struct
 import subprocess
 import sys
@@ -69,14 +70,16 @@ state = {
     "current_file": None,
     "cue_data": None,
     "waveform": None,          # list of floats 0.0-1.0 (downsampled RMS)
+    "sigil_samples": {},
     "midi_port_name": None,
     "midi_error": None,
     "midi_activity_count": 0,
     "midi_activity_time": None,
     "base_note": 48,
     "peak_start_enabled": True,
-    "pitch_bend_semitones": 0.0,
-    "active_voices": {},       # voice key -> (pyo.SfPlayer, pyo.CallAfter)
+    "pitch_bend_semitones_preview": 0.0,
+    "pitch_bend_semitones": {},
+    "active_voices": {},       # voice key -> {"player", "stop_cb", "channel", "fade"}
     "voice_order": [],         # oldest -> newest active voice keys
     "midi_note_voices": {},    # MIDI note -> queued voice keys
     "midi_voice_counter": 0,
@@ -91,11 +94,19 @@ state = {
 
 state_lock = threading.Lock()
 
-PITCH_BEND_RANGE = 2.0
+PITCH_BEND_RANGE = 12.0
 PITCH_BEND_MAX = 8192
 WAVEFORM_POINTS = 1200        # number of amplitude points sent to browser
 MAX_ACTIVE_VOICES = 48
 MAX_MIDI_VOICES_PER_NOTE = 8
+SAMPLE_EDGE_FADE_SECONDS = 0.008
+DEFAULT_WORDS_PER_SPLIT = 2
+SIGIL_BY_MIDI_CHANNEL = {
+    0: "chaos",
+    1: "oracle",
+    2: "sacred",
+    3: "directive",
+}
 
 
 def get_midi_input_names():
@@ -211,6 +222,30 @@ def compute_peak_starts(samples, frame_rate, splits, duration):
     total_samples = len(samples)
     for i, start in enumerate(splits):
         end = splits[i + 1] if i + 1 < len(splits) else duration
+        start_idx = max(0, min(total_samples, int(start * frame_rate)))
+        end_idx = max(start_idx + 1, min(total_samples, int(end * frame_rate)))
+        chunk = samples[start_idx:end_idx]
+        if not chunk:
+            peak_starts.append(round(start, 4))
+            continue
+        peak_offset = max(range(len(chunk)), key=lambda idx: abs(chunk[idx]))
+        peak_starts.append(round((start_idx + peak_offset) / frame_rate, 4))
+    return peak_starts
+
+
+def compute_first_word_peak_starts(samples, frame_rate, grouped_splits, word_splits, duration):
+    peak_starts = []
+    if not word_splits:
+        return compute_peak_starts(samples, frame_rate, grouped_splits, duration)
+
+    total_samples = len(samples)
+    for grouped_start in grouped_splits:
+        word_index = min(
+            range(len(word_splits)),
+            key=lambda idx: abs(word_splits[idx] - grouped_start)
+        )
+        start = word_splits[word_index]
+        end = word_splits[word_index + 1] if word_index + 1 < len(word_splits) else duration
         start_idx = max(0, min(total_samples, int(start * frame_rate)))
         end_idx = max(start_idx + 1, min(total_samples, int(end * frame_rate)))
         chunk = samples[start_idx:end_idx]
@@ -355,8 +390,19 @@ def detect_splits_words(samples, frame_rate, duration,
     return splits
 
 
+def group_word_splits(splits, words_per_split=DEFAULT_WORDS_PER_SPLIT):
+    words_per_split = max(1, int(words_per_split or DEFAULT_WORDS_PER_SPLIT))
+    if words_per_split == 1 or len(splits) <= 1:
+        return splits
+    grouped = splits[::words_per_split]
+    if grouped[0] != 0.0:
+        grouped.insert(0, 0.0)
+    return grouped
+
+
 def analyze_file(mp3_path, mode="silence", interval=10.0,
-                 silence_thresh=0.01, silence_min=0.5):
+                 silence_thresh=0.01, silence_min=0.5,
+                 words_per_split=DEFAULT_WORDS_PER_SPLIT):
     """Return (cue_data dict, waveform list)."""
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         wav_path = tmp.name
@@ -372,19 +418,24 @@ def analyze_file(mp3_path, mode="silence", interval=10.0,
         splits = detect_splits_silence(samples, frame_rate, duration,
                                        silence_thresh=silence_thresh,
                                        min_silence_sec=silence_min)
+        peak_starts = compute_peak_starts(samples, frame_rate, splits, duration)
     elif mode == "words":
-        splits = detect_splits_words(samples, frame_rate, duration,
-                                     silence_thresh=silence_thresh,
-                                     min_silence_sec=silence_min)
+        word_splits = detect_splits_words(samples, frame_rate, duration,
+                                          silence_thresh=silence_thresh,
+                                          min_silence_sec=silence_min)
+        splits = group_word_splits(word_splits, words_per_split)
+        peak_starts = compute_first_word_peak_starts(samples, frame_rate, splits, word_splits, duration)
     else:
         splits = detect_splits_fixed(duration, interval_sec=interval)
+        peak_starts = compute_peak_starts(samples, frame_rate, splits, duration)
 
     cue_data = {
         "file": str(mp3_path),
         "duration": round(duration, 4),
         "mode": mode,
+        "words_per_split": words_per_split if mode == "words" else None,
         "splits": splits,
-        "peak_starts": compute_peak_starts(samples, frame_rate, splits, duration),
+        "peak_starts": peak_starts,
         "num_splits": len(splits),
     }
     return cue_data, waveform
@@ -474,27 +525,49 @@ def semitones_to_ratio(semitones):
     return 2.0 ** (semitones / 12.0)
 
 
-def player_note_on(note, velocity):
+def sample_for_channel(channel):
+    sigil = SIGIL_BY_MIDI_CHANNEL.get(channel)
+    if sigil:
+        sample = state["sigil_samples"].get(sigil)
+        if sample and sample.get("current_file") and sample.get("cue_data"):
+            return sample
+    return {
+        "sigil": None,
+        "current_file": state["current_file"],
+        "cue_data": state["cue_data"],
+        "waveform": state["waveform"],
+    }
+
+
+def player_note_on(note, velocity, channel=None):
     with state_lock:
-        if not state["pyo_ready"] or state["current_file"] is None:
+        if not state["pyo_ready"]:
             return
-        cue_data = state["cue_data"]
-        if cue_data is None:
+        sample = sample_for_channel(channel)
+        cue_data = sample.get("cue_data")
+        mp3_path = sample.get("current_file")
+        if cue_data is None or mp3_path is None:
             return
         base_note = state["base_note"]
-        split_index = note - base_note
         splits = cue_data["splits"]
+        if note < base_note:
+            split_index = min(len(splits) - 1, max(0, int((note / max(1, base_note)) * len(splits))))
+        else:
+            split_index = note - base_note
         if split_index < 0 or split_index >= len(splits):
             return
 
-        note_voice_keys = state["midi_note_voices"].setdefault(note, [])
+        _stop_channel_voices(channel)
+
+        midi_key = (channel, note)
+        note_voice_keys = state["midi_note_voices"].setdefault(midi_key, [])
         while len(note_voice_keys) >= MAX_MIDI_VOICES_PER_NOTE:
             _stop_voice(note_voice_keys[0])
-            note_voice_keys = state["midi_note_voices"].setdefault(note, [])
+            note_voice_keys = state["midi_note_voices"].setdefault(midi_key, [])
 
-        voice_key = f"midi-{note}-{state['midi_voice_counter']}"
+        voice_key = f"midi-{channel if channel is not None else 'all'}-{note}-{state['midi_voice_counter']}"
         state["midi_voice_counter"] += 1
-        _play_split_locked(voice_key, split_index, velocity)
+        _play_split_locked(voice_key, split_index, velocity, cue_data=cue_data, mp3_path=mp3_path, channel=channel, loop=True)
         note_voice_keys.append(voice_key)
 
 
@@ -506,54 +579,94 @@ def player_preview_on(split_index, velocity=110, voice_key="preview"):
             raise RuntimeError("no file has been analyzed")
         splits = state["cue_data"]["splits"]
         if split_index < 0 or split_index >= len(splits):
-            raise RuntimeError("split index out of range")
+            raise RuntimeError(f"split index {split_index} out of range for {len(splits)} splits")
 
         _play_split_locked(voice_key, split_index, velocity)
 
 
-def _play_split_locked(voice_key, split_index, velocity):
+def _play_split_locked(voice_key, split_index, velocity, cue_data=None, mp3_path=None, channel=None, loop=False):
     """Must be called with state_lock held."""
-    cue_data = state["cue_data"]
-    splits = cue_data["splits"]
-    duration = cue_data["duration"]
+    if cue_data is None:
+        cue_data = state["cue_data"]
+    if mp3_path is None:
+        mp3_path = state["current_file"]
 
     _stop_voice(voice_key)
     while len(state["active_voices"]) >= MAX_ACTIVE_VOICES and state["voice_order"]:
         _stop_voice(state["voice_order"][0])
 
+    voice = {
+        "cue_data": cue_data,
+        "mp3_path": mp3_path,
+        "split_index": split_index,
+        "velocity": velocity,
+        "channel": channel,
+        "loop": loop,
+    }
+    state["active_voices"][voice_key] = voice
+    state["voice_order"].append(voice_key)
+    _start_voice_segment_locked(voice_key, voice)
+
+
+def _start_voice_segment_locked(voice_key, voice):
+    """Must be called with state_lock held."""
+    cue_data = voice["cue_data"]
+    mp3_path = voice["mp3_path"]
+    split_index = voice["split_index"]
+    velocity = voice["velocity"]
+    channel = voice["channel"]
+    splits = cue_data["splits"]
+    duration = cue_data["duration"]
+
     start_sec = splits[split_index]
     end_sec = splits[split_index + 1] if split_index + 1 < len(splits) else duration
-    if state["peak_start_enabled"] and cue_data.get("mode") == "words":
+    if state["peak_start_enabled"]:
         peak_starts = cue_data.get("peak_starts") or []
         if split_index < len(peak_starts):
             start_sec = min(max(start_sec, peak_starts[split_index]), end_sec)
     volume = velocity / 127.0
-    pitch_ratio = semitones_to_ratio(state["pitch_bend_semitones"])
+    pitch_ratio = semitones_to_ratio(state["pitch_bend_semitones"].get(channel, 0.0))
     seg_duration = (end_sec - start_sec) / pitch_ratio
+    fade_time = min(SAMPLE_EDGE_FADE_SECONDS, max(0.001, seg_duration * 0.45))
+    fade = pyo.Fader(fadein=fade_time, fadeout=fade_time, dur=seg_duration, mul=volume).play()
 
-    mp3_path = state["current_file"]
     player = pyo.SfPlayer(
         str(mp3_path),
         speed=pitch_ratio,
         loop=False,
         offset=start_sec,
         interp=2,
-        mul=volume,
+        mul=fade,
     ).out()
 
-    stop_cb = pyo.CallAfter(lambda: _stop_voice_cb(voice_key), seg_duration)
-    state["active_voices"][voice_key] = (player, stop_cb)
-    state["voice_order"].append(voice_key)
+    stop_cb = pyo.CallAfter(lambda: _voice_segment_done_cb(voice_key), seg_duration)
+    voice["player"] = player
+    voice["stop_cb"] = stop_cb
+    voice["fade"] = fade
 
 
 def _stop_voice(note):
     """Must be called with state_lock held."""
-    if note in state["active_voices"]:
-        player, _ = state["active_voices"].pop(note)
-        player.stop()
+    voice = state["active_voices"].pop(note, None)
+    if voice:
+        fade = voice.get("fade")
+        player = voice.get("player")
+        stop_cb = voice.get("stop_cb")
+        if stop_cb is not None and hasattr(stop_cb, "stop"):
+            stop_cb.stop()
+        if fade is not None and hasattr(fade, "stop"):
+            fade.stop()
+        pyo.CallAfter(lambda: _stop_player(player), SAMPLE_EDGE_FADE_SECONDS * 1.5)
     if note in state["voice_order"]:
         state["voice_order"].remove(note)
     _remove_midi_voice_key_locked(note)
+
+
+def _stop_channel_voices(channel):
+    """Must be called with state_lock held."""
+    for voice_key, voice in list(state["active_voices"].items()):
+        if voice.get("channel") == channel:
+            _stop_voice(voice_key)
 
 
 def _remove_midi_voice_key_locked(voice_key):
@@ -565,18 +678,34 @@ def _remove_midi_voice_key_locked(voice_key):
             state["midi_note_voices"].pop(note, None)
 
 
-def _stop_voice_cb(note):
+def _voice_segment_done_cb(note):
     with state_lock:
-        if note in state["active_voices"]:
-            state["active_voices"].pop(note)
+        voice = state["active_voices"].get(note)
+        if not voice:
+            return
+        _stop_player(voice.get("player"))
+        voice["player"] = None
+        voice["stop_cb"] = None
+        voice["fade"] = None
+        if voice.get("loop"):
+            _start_voice_segment_locked(note, voice)
+            return
+        state["active_voices"].pop(note, None)
         if note in state["voice_order"]:
             state["voice_order"].remove(note)
         _remove_midi_voice_key_locked(note)
 
 
-def player_note_off(note):
+def _stop_player(player):
+    if player is not None and hasattr(player, "stop"):
+        player.stop()
+
+
+def player_note_off(note, channel=None):
     with state_lock:
-        voice_keys = state["midi_note_voices"].get(note)
+        voice_keys = state["midi_note_voices"].get((channel, note))
+        if not voice_keys and channel is not None:
+            voice_keys = state["midi_note_voices"].get((None, note))
         if not voice_keys:
             return
         _stop_voice(voice_keys[0])
@@ -587,13 +716,18 @@ def player_preview_off(voice_key="preview"):
         _stop_voice(voice_key)
 
 
-def player_pitch_bend(bend_value):
+def player_pitch_bend(bend_value, channel=None):
     with state_lock:
         semitones = (bend_value / PITCH_BEND_MAX) * PITCH_BEND_RANGE
-        state["pitch_bend_semitones"] = semitones
+        state["pitch_bend_semitones"][channel] = semitones
+        if channel is None:
+            state["pitch_bend_semitones_preview"] = semitones
         ratio = semitones_to_ratio(semitones)
-        for note, (player, _) in state["active_voices"].items():
-            player.setSpeed(ratio)
+        for voice in state["active_voices"].values():
+            if voice.get("channel") == channel:
+                player = voice.get("player")
+                if player is not None:
+                    player.setSpeed(ratio)
 
 
 def player_stop_all():
@@ -631,11 +765,11 @@ def handle_midi_message(msg):
         state["midi_activity_time"] = time.time()
 
     if msg.type == "note_on" and msg.velocity > 0:
-        player_note_on(msg.note, msg.velocity)
+        player_note_on(msg.note, msg.velocity, getattr(msg, "channel", None))
     elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
-        player_note_off(msg.note)
+        player_note_off(msg.note, getattr(msg, "channel", None))
     elif msg.type == "pitchwheel":
-        player_pitch_bend(msg.pitch)
+        player_pitch_bend(msg.pitch, getattr(msg, "channel", None))
 
 
 def start_midi(port_name):
@@ -721,18 +855,67 @@ def resolve_mp3_file(filename):
     return mp3_path if mp3_path.exists() else None
 
 
-def load_and_analyze_file(mp3_path, mode="fixed", interval=1.0,
-                          silence_thresh=0.01, silence_min=0.5):
+def load_and_analyze_file(mp3_path, mode="words", interval=1.0,
+                          silence_thresh=0.01, silence_min=0.5,
+                          words_per_split=DEFAULT_WORDS_PER_SPLIT):
     player_stop_all()
     cue_data, waveform = analyze_file(
         mp3_path, mode=mode, interval=interval,
-        silence_thresh=silence_thresh, silence_min=silence_min
+        silence_thresh=silence_thresh, silence_min=silence_min,
+        words_per_split=words_per_split
     )
     with state_lock:
         state["current_file"] = mp3_path
         state["cue_data"] = cue_data
         state["waveform"] = waveform
     return cue_data, waveform
+
+
+def choose_random_prefixed_mp3(mp3_dir, prefix):
+    matches = [
+        p for p in mp3_dir.iterdir()
+        if p.suffix.lower() == ".mp3" and p.name.lower().startswith(prefix.lower())
+    ]
+    if not matches:
+        return None
+    return random.choice(sorted(matches))
+
+
+def load_sigil_mp3s_with_defaults():
+    mp3_dir = Path(state["mp3_dir"])
+    loaded = {}
+    for sigil in ["chaos", "oracle", "sacred", "directive"]:
+        mp3_path = choose_random_prefixed_mp3(mp3_dir, sigil)
+        if mp3_path is None:
+            loaded[sigil] = {"sigil": sigil, "error": f"No MP3 files start with '{sigil}'"}
+            print(f"No MP3 files start with '{sigil}' in {mp3_dir}", file=sys.stderr)
+            continue
+        try:
+            cue_data, waveform = analyze_file(
+                mp3_path.resolve(),
+                mode="words",
+                interval=1.0,
+                words_per_split=DEFAULT_WORDS_PER_SPLIT,
+            )
+            loaded[sigil] = {
+                "sigil": sigil,
+                "current_file": mp3_path.resolve(),
+                "cue_data": cue_data,
+                "waveform": waveform,
+                "error": None,
+            }
+            print(f"Loaded {sigil} MP3: {mp3_path.name}")
+        except Exception as e:
+            loaded[sigil] = {"sigil": sigil, "current_file": mp3_path.resolve(), "error": str(e)}
+            print(f"Failed to load {sigil} MP3 '{mp3_path.name}': {e}", file=sys.stderr)
+
+    with state_lock:
+        state["sigil_samples"] = loaded
+        first = next((sample for sample in loaded.values() if sample.get("cue_data")), None)
+        if first:
+            state["current_file"] = first["current_file"]
+            state["cue_data"] = first["cue_data"]
+            state["waveform"] = first["waveform"]
 
 
 def load_first_mp3_with_defaults():
@@ -815,12 +998,21 @@ class Handler(BaseHTTPRequestHandler):
                     "current_file": Path(state["current_file"]).name if state["current_file"] else None,
                     "cue_data": state["cue_data"],
                     "waveform": state["waveform"],
+                    "sigil_samples": {
+                        sigil: {
+                            "current_file": Path(sample["current_file"]).name if sample.get("current_file") else None,
+                            "cue_data": sample.get("cue_data"),
+                            "error": sample.get("error"),
+                        }
+                        for sigil, sample in state["sigil_samples"].items()
+                    },
                     "midi_port": state["midi_port_name"],
                     "midi_error": state["midi_error"],
                     "midi_activity_count": state["midi_activity_count"],
                     "midi_activity_time": state["midi_activity_time"],
                     "base_note": state["base_note"],
                     "peak_start_enabled": state["peak_start_enabled"],
+                    "pitch_bend_semitones": state["pitch_bend_semitones_preview"],
                     "active_voices": list(state["active_voices"].keys()),
                     "pyo_ready": state["pyo_ready"],
                     "audio_error": state["audio_error"],
@@ -831,10 +1023,11 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/analyze":
             filename = params.get("file", [None])[0]
-            mode = params.get("mode", ["fixed"])[0]
+            mode = params.get("mode", ["words"])[0]
             interval = float(params.get("interval", [1.0])[0])
             silence_thresh = float(params.get("silence_thresh", [0.01])[0])
             silence_min = float(params.get("silence_min", [0.5])[0])
+            words_per_split = max(1, int(params.get("words_per_split", [DEFAULT_WORDS_PER_SPLIT])[0]))
 
             if not filename:
                 json_response(self, {"error": "missing file"}, 400)
@@ -848,7 +1041,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 cue_data, waveform = load_and_analyze_file(
                     mp3_path, mode=mode, interval=interval,
-                    silence_thresh=silence_thresh, silence_min=silence_min
+                    silence_thresh=silence_thresh, silence_min=silence_min,
+                    words_per_split=words_per_split
                 )
                 json_response(self, {"cue_data": cue_data, "waveform": waveform})
             except Exception as e:
@@ -899,19 +1093,62 @@ class Handler(BaseHTTPRequestHandler):
                 state["peak_start_enabled"] = enabled
             json_response(self, {"ok": True, "peak_start_enabled": enabled})
 
+        elif path == "/api/set_pitch_bend":
+            try:
+                semitones = float(params.get("semitones", [0.0])[0])
+            except ValueError:
+                json_response(self, {"error": "bad semitones"}, 400)
+                return
+            semitones = max(-PITCH_BEND_RANGE, min(PITCH_BEND_RANGE, semitones))
+            with state_lock:
+                state["pitch_bend_semitones"][None] = semitones
+                state["pitch_bend_semitones_preview"] = semitones
+            json_response(self, {"ok": True, "pitch_bend_semitones": semitones})
+
         elif path == "/api/stop_all":
             player_stop_all()
             json_response(self, {"ok": True})
 
         elif path == "/api/preview_on":
+            filename = params.get("file", [None])[0]
             index = params.get("index", [None])[0]
             voice = params.get("voice", ["preview"])[0]
             if index is None:
                 json_response(self, {"error": "missing index"}, 400)
                 return
             try:
-                player_preview_on(int(index), voice_key=voice)
-                json_response(self, {"ok": True, "index": int(index), "voice": voice})
+                split_index = int(index)
+            except ValueError:
+                json_response(self, {"error": f"bad index: {index}"}, 400)
+                return
+
+            with state_lock:
+                current_file = Path(state["current_file"]).name if state["current_file"] else None
+                split_count = len(state["cue_data"]["splits"]) if state["cue_data"] else 0
+            if filename and current_file and filename != current_file:
+                json_response(self, {
+                    "error": f"selected file '{filename}' is not loaded on the server; loaded file is '{current_file}'",
+                    "current_file": current_file,
+                    "split_count": split_count,
+                }, 409)
+                return
+            if split_index < 0 or split_index >= split_count:
+                json_response(self, {
+                    "error": f"split index {split_index} out of range for {split_count} splits",
+                    "current_file": current_file,
+                    "split_count": split_count,
+                }, 400)
+                return
+
+            try:
+                player_preview_on(split_index, voice_key=voice)
+                json_response(self, {
+                    "ok": True,
+                    "index": split_index,
+                    "voice": voice,
+                    "current_file": current_file,
+                    "split_count": split_count,
+                })
             except Exception as e:
                 json_response(self, {"error": str(e)}, 500)
 
@@ -959,7 +1196,9 @@ def main():
     state["mp3_dir"] = mp3_dir
     state["base_note"] = args.base_note
 
-    load_first_mp3_with_defaults()
+    load_sigil_mp3s_with_defaults()
+    if state["current_file"] is None:
+        load_first_mp3_with_defaults()
 
     # Start pyo in background thread
     pyo_thread = threading.Thread(target=init_pyo, daemon=True)
