@@ -471,7 +471,7 @@ function buildVoicePips() {
 // File list
 // ---------------------------------------------------------------------------
 async function loadFiles() {
-  const resp = await fetch('/api/files');
+  const resp = await fetch('api/files');
   const data = await resp.json();
   const list = document.getElementById('file-list');
   list.innerHTML = '';
@@ -516,8 +516,8 @@ async function loadMidiPorts() {
   let state = {};
   try {
     const [portsResp, stateResp] = await Promise.all([
-      fetch('/api/midi_ports'),
-      fetch('/api/state')
+      fetch('api/midi_ports'),
+      fetch('api/state')
     ]);
     data = await portsResp.json();
     state = await stateResp.json();
@@ -573,7 +573,7 @@ async function setMidiPort(port) {
     return;
   }
 
-  const resp = await fetch(`/api/set_midi?port=${encodeURIComponent(port)}`);
+  const resp = await fetch(`api/set_midi?port=${encodeURIComponent(port)}`);
   const data = await resp.json();
   if (data.error) {
     updateMidiStatus(null, data.error);
@@ -619,7 +619,7 @@ async function loadAudioOutputs() {
 
   let data;
   try {
-    const resp = await fetch('/api/audio_outputs');
+    const resp = await fetch('api/audio_outputs');
     data = await resp.json();
   } catch (e) {
     sel.innerHTML = '<option value="">— unavailable —</option>';
@@ -654,7 +654,7 @@ async function setAudioOutput(outputId) {
   if (!outputId) return;
 
   setAudioStatus('switching…');
-  const resp = await fetch(`/api/set_audio_output?id=${encodeURIComponent(outputId)}`);
+  const resp = await fetch(`api/set_audio_output?id=${encodeURIComponent(outputId)}`);
   const data = await resp.json();
   if (data.error) {
     setAudioStatus('unavailable', false, data.error);
@@ -667,7 +667,7 @@ async function setAudioOutput(outputId) {
 async function setBaseNote(val) {
   const note = Math.max(0, Math.min(127, parseInt(val) || 0));
   document.getElementById('base-note').value = note;
-  await fetch(`/api/set_base_note?note=${encodeURIComponent(note)}`);
+  await fetch(`api/set_base_note?note=${encodeURIComponent(note)}`);
   drawWaveform();
 }
 
@@ -675,11 +675,11 @@ async function setPitchBend(val) {
   const semitones = Math.max(-12, Math.min(12, parseFloat(val) || 0));
   document.getElementById('pitch-bend').value = semitones;
   document.getElementById('pitch-bend-val').textContent = semitones.toFixed(1);
-  await fetch(`/api/set_pitch_bend?semitones=${encodeURIComponent(semitones)}`);
+  await fetch(`api/set_pitch_bend?semitones=${encodeURIComponent(semitones)}`);
 }
 
 async function setPeakStart(enabled) {
-  await fetch(`/api/set_peak_start?enabled=${enabled ? 1 : 0}`);
+  await fetch(`api/set_peak_start?enabled=${enabled ? 1 : 0}`);
   drawWaveform();
 }
 
@@ -735,7 +735,7 @@ async function analyze() {
     words_per_split: wordsPerSplit,
   });
 
-  const resp = await fetch(`/api/analyze?${params}`);
+  const resp = await fetch(`api/analyze?${params}`);
   const data = await resp.json();
 
   if (data.error) {
@@ -810,7 +810,7 @@ function stopManualPlayback(redraw = true) {
     clearTimeout(manualStopTimer);
     manualStopTimer = null;
   }
-  fetch('/api/preview_off').catch(() => {});
+  fetch('api/preview_off').catch(() => {});
   manualPlayingIndex = null;
   setManualButtonActive(null);
   setAudioStatus('idle');
@@ -849,14 +849,14 @@ function stopRandomPlayback(redraw = true, stopAudio = true) {
   randomVoiceTimers.forEach((timer, voiceKey) => {
     clearTimeout(timer);
     if (stopAudio) {
-      fetch(`/api/preview_off?voice=${encodeURIComponent(voiceKey)}`).catch(() => {});
+      fetch(`api/preview_off?voice=${encodeURIComponent(voiceKey)}`).catch(() => {});
     }
   });
   randomVoiceTimers.clear();
   randomVoiceSplits.clear();
   activeRandomSplitCounts.clear();
   if (stopAudio) {
-    fetch('/api/preview_off').catch(() => {});
+    fetch('api/preview_off').catch(() => {});
   }
   updateRandomButton();
   if (stopAudio) {
@@ -962,7 +962,7 @@ async function playSplit(index, options = {}) {
 
   try {
     const params = new URLSearchParams({ file: currentFile, index: splitIndex, voice: voiceKey });
-    const resp = await fetch(`/api/preview_on?${params}`);
+    const resp = await fetch(`api/preview_on?${params}`);
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
     if (options.random) {
@@ -970,7 +970,7 @@ async function playSplit(index, options = {}) {
       randomVoiceSplits.set(voiceKey, splitIndex);
       addRandomSplitHighlight(splitIndex);
       const noteOffTimer = setTimeout(() => {
-        fetch(`/api/preview_off?voice=${encodeURIComponent(voiceKey)}`).catch(() => {});
+        fetch(`api/preview_off?voice=${encodeURIComponent(voiceKey)}`).catch(() => {});
         removeRandomVoice(voiceKey);
       }, playMs);
       randomVoiceTimers.set(voiceKey, noteOffTimer);
@@ -1147,7 +1147,7 @@ function startPolling() {
   pollInterval = setInterval(async () => {
     let data;
     try {
-      const resp = await fetch('/api/state');
+      const resp = await fetch('api/state');
       data = await resp.json();
     } catch (e) {
       return;

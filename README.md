@@ -9,7 +9,7 @@ Polyphonic MIDI-driven MP3 sample splitter and player with a browser UI.
 - Waveform visualisation with labelled split markers (MIDI note names + timestamps)
 - Each split mapped to a MIDI note (starting at C3 by default)
 - Polyphonic playback — multiple splits simultaneously
-- Pitch bend for pitch shifting (±2 semitones)
+- Pitch bend for pitch shifting (±12 semitones)
 - Velocity controls volume
 - Note-off stops playback
 - MIDI port selectable in the UI
@@ -52,4 +52,4 @@ Options:
 | Note on (base + N) | Play split N |
 | Note off | Stop that split |
 | Velocity | Volume (0–127 → 0–1) |
-| Pitch bend | Pitch shift ±2 semitones |
+| Pitch bend | Pitch shift ±12 semitones |
