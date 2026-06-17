@@ -2,8 +2,11 @@
 """
 samplesplitter.py — MIDI-driven MP3 sample splitter and polyphonic player.
 
+Legacy standalone implementation. The Go implementation in this repository and
+Palette's in-engine SamplePlayback service are the reference implementations.
+
 Usage:
-    python3 samplesplitter.py --dir /path/to/mp3s [--port 9876] [--base-note 48]
+    python3 samplesplitter.py [--port 9876] [--base-note 48]
 
 Opens a browser UI at http://localhost:9876 for file selection, splitting,
 and MIDI port configuration. Plays back splits polyphonically via pyo.
@@ -14,6 +17,7 @@ import json
 import math
 import os
 import random
+import re
 import struct
 import subprocess
 import sys
@@ -101,6 +105,7 @@ MAX_ACTIVE_VOICES = 48
 MAX_MIDI_VOICES_PER_NOTE = 8
 SAMPLE_EDGE_FADE_SECONDS = 0.008
 DEFAULT_WORDS_PER_SPLIT = 2
+MIN_MP3_DURATION_SECONDS = 10.0
 SIGIL_BY_MIDI_CHANNEL = {
     0: "chaos",
     1: "oracle",
@@ -852,7 +857,34 @@ def resolve_mp3_file(filename):
     mp3_path = (mp3_dir / filename).resolve()
     if mp3_path.parent != mp3_dir or mp3_path.suffix.lower() != ".mp3":
         return None
-    return mp3_path if mp3_path.exists() else None
+    if not mp3_path.exists():
+        return None
+    duration = mp3_duration_seconds(mp3_path)
+    if duration is None or duration < MIN_MP3_DURATION_SECONDS:
+        return None
+    return mp3_path
+
+
+def mp3_duration_seconds(mp3_path):
+    result = subprocess.run(
+        [FFMPEG, "-i", str(mp3_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    text = result.stderr.decode(errors="ignore")
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    if not match:
+        return None
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def list_mp3_files(mp3_dir):
+    return sorted(
+        p for p in Path(mp3_dir).iterdir()
+        if p.suffix.lower() == ".mp3"
+        and (mp3_duration_seconds(p) or 0) >= MIN_MP3_DURATION_SECONDS
+    )
 
 
 def load_and_analyze_file(mp3_path, mode="words", interval=1.0,
@@ -871,21 +903,25 @@ def load_and_analyze_file(mp3_path, mode="words", interval=1.0,
     return cue_data, waveform
 
 
-def choose_random_prefixed_mp3(mp3_dir, prefix):
+def choose_random_prefixed_mp3(mp3_dir, prefix, exclude_path=None):
+    excluded = Path(exclude_path).resolve() if exclude_path else None
     matches = [
-        p for p in mp3_dir.iterdir()
-        if p.suffix.lower() == ".mp3" and p.name.lower().startswith(prefix.lower())
+        p for p in list_mp3_files(mp3_dir)
+        if p.name.lower().startswith(prefix.lower())
     ]
     if not matches:
         return None
-    return random.choice(sorted(matches))
+    alternates = [p for p in matches if p.resolve() != excluded]
+    return random.choice(sorted(alternates or matches))
 
 
 def load_sigil_mp3s_with_defaults():
     mp3_dir = Path(state["mp3_dir"])
     loaded = {}
     for sigil in ["chaos", "oracle", "sacred", "directive"]:
-        mp3_path = choose_random_prefixed_mp3(mp3_dir, sigil)
+        with state_lock:
+            previous = state["sigil_samples"].get(sigil, {}).get("current_file")
+        mp3_path = choose_random_prefixed_mp3(mp3_dir, sigil, previous)
         if mp3_path is None:
             loaded[sigil] = {"sigil": sigil, "error": f"No MP3 files start with '{sigil}'"}
             print(f"No MP3 files start with '{sigil}' in {mp3_dir}", file=sys.stderr)
@@ -920,7 +956,7 @@ def load_sigil_mp3s_with_defaults():
 
 def load_first_mp3_with_defaults():
     mp3_dir = Path(state["mp3_dir"])
-    files = sorted(p for p in mp3_dir.iterdir() if p.suffix.lower() == ".mp3")
+    files = list_mp3_files(mp3_dir)
     if not files:
         print(f"No MP3 files found in {mp3_dir}", file=sys.stderr)
         return
@@ -947,10 +983,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/files":
             mp3_dir = state["mp3_dir"]
-            files = sorted(
-                p.name for p in Path(mp3_dir).iterdir()
-                if p.suffix.lower() == ".mp3"
-            )
+            files = [p.name for p in list_mp3_files(mp3_dir)]
             json_response(self, {"files": files, "dir": str(mp3_dir)})
 
         elif path == "/api/media":
@@ -1179,16 +1212,23 @@ def open_browser(port):
 # Main
 # ---------------------------------------------------------------------------
 
+def resolve_default_mp3_dir(raw_dir):
+    user_profile = os.environ.get("USERPROFILE")
+    if not user_profile:
+        return (Path(os.sep) / "mp3s").resolve()
+    return (Path(user_profile) / "mp3s").resolve()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sample splitter and MIDI player.")
-    parser.add_argument("--dir", default="mp3s", help="Directory containing MP3 files (default: mp3s)")
+    parser.add_argument("--dir", default=None, help="Ignored; MP3 directory is always %USERPROFILE%\\mp3s")
     parser.add_argument("--port", type=int, default=9876, help="HTTP port (default: 9876)")
     parser.add_argument("--base-note", type=int, default=48, help="MIDI base note (default: 48 = C3)")
     parser.add_argument("--midi-port", nargs="+", default=None, help="MIDI input port to listen to on startup")
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically")
     args = parser.parse_args()
 
-    mp3_dir = Path(args.dir).expanduser().resolve()
+    mp3_dir = resolve_default_mp3_dir(args.dir)
     if not mp3_dir.is_dir():
         print(f"Error: directory not found: {mp3_dir}", file=sys.stderr)
         sys.exit(1)
