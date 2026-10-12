@@ -117,8 +117,24 @@ SIGIL_BY_MIDI_CHANNEL = {
 def get_midi_input_names():
     if mido is None:
         return [], "mido is not installed"
+    code = (
+        "import json, mido\n"
+        "print(json.dumps(mido.get_input_names()))\n"
+    )
     try:
-        return mido.get_input_names(), None
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception as e:
+        return [], f"MIDI backend unavailable: {e}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        return [], f"MIDI backend unavailable: {detail or 'port scan failed'}"
+    try:
+        return json.loads(result.stdout), None
     except Exception as e:
         return [], f"MIDI backend unavailable: {e}"
 
@@ -1146,6 +1162,7 @@ class Handler(BaseHTTPRequestHandler):
             filename = params.get("file", [None])[0]
             index = params.get("index", [None])[0]
             voice = params.get("voice", ["preview"])[0]
+            expected_split_count = params.get("split_count", [None])[0]
             if index is None:
                 json_response(self, {"error": "missing index"}, 400)
                 return
@@ -1161,10 +1178,25 @@ class Handler(BaseHTTPRequestHandler):
             if filename and current_file and filename != current_file:
                 json_response(self, {
                     "error": f"selected file '{filename}' is not loaded on the server; loaded file is '{current_file}'",
+                    "stale": True,
                     "current_file": current_file,
                     "split_count": split_count,
                 }, 409)
                 return
+            if expected_split_count is not None:
+                try:
+                    expected_count = int(expected_split_count)
+                except ValueError:
+                    json_response(self, {"error": f"bad split_count: {expected_split_count}"}, 400)
+                    return
+                if expected_count != split_count:
+                    json_response(self, {
+                        "error": f"split count changed: request expected {expected_count}, loaded file has {split_count}",
+                        "stale": True,
+                        "current_file": current_file,
+                        "split_count": split_count,
+                    }, 409)
+                    return
             if split_index < 0 or split_index >= split_count:
                 json_response(self, {
                     "error": f"split index {split_index} out of range for {split_count} splits",

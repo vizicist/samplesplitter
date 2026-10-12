@@ -435,6 +435,7 @@ let randomVoiceCounter = 0;
 let randomVoiceTimers = new Map();
 let randomVoiceSplits = new Map();
 let activeRandomSplitCounts = new Map();
+let analyzeRequestId = 0;
 let lastMidiActivityCount = null;
 let midiFlashTimer = null;
 const MAX_VOICES = 8;
@@ -716,7 +717,10 @@ async function reSplit() {
 // ---------------------------------------------------------------------------
 async function analyze() {
   if (!currentFile) return;
+  const requestId = ++analyzeRequestId;
+  const analyzedFile = currentFile;
   stopRandomPlayback();
+  stopManualPlayback(false);
 
   const mode = splitMode;
   const interval = document.getElementById('interval').value;
@@ -737,6 +741,10 @@ async function analyze() {
 
   const resp = await fetch(`/api/analyze?${params}`);
   const data = await resp.json();
+
+  if (requestId !== analyzeRequestId || analyzedFile !== currentFile) {
+    return;
+  }
 
   if (data.error) {
     alert('Error: ' + data.error);
@@ -943,6 +951,8 @@ async function playSplit(index, options = {}) {
     stopRandomPlayback(false, true);
   }
 
+  const playbackFile = currentFile;
+  const splitCount = cueData.splits.length;
   const start = cueData.splits[splitIndex];
   const end = splitIndex + 1 < cueData.splits.length ? cueData.splits[splitIndex + 1] : cueData.duration;
   const duration = Math.max(0, end - start);
@@ -961,10 +971,22 @@ async function playSplit(index, options = {}) {
   if (!options.random) drawWaveform();
 
   try {
-    const params = new URLSearchParams({ file: currentFile, index: splitIndex, voice: voiceKey });
+    const params = new URLSearchParams({
+      file: playbackFile,
+      index: splitIndex,
+      voice: voiceKey,
+      split_count: splitCount,
+    });
     const resp = await fetch(`/api/preview_on?${params}`);
     const data = await resp.json();
-    if (data.error) throw new Error(data.error);
+    if (data.stale) return;
+    if (data.error) {
+      throw new Error(data.error);
+    }
+    if (playbackFile !== currentFile || cueData.splits.length !== splitCount) {
+      fetch(`/api/preview_off?voice=${encodeURIComponent(voiceKey)}`).catch(() => {});
+      return;
+    }
     if (options.random) {
       const playMs = getRandomLengthMs();
       randomVoiceSplits.set(voiceKey, splitIndex);
